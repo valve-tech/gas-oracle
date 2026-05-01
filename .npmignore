@@ -1,0 +1,14 @@
+# When .npmignore is present it overrides .gitignore for `npm publish`,
+# so this file lists everything we DON'T want in the published tarball.
+# `files` in package.json already narrows to dist/src/README.md; this
+# scrubs the per-file noise inside those.
+
+# Test sources / build outputs — included in src/ for tsc + vitest but
+# not useful to consumers, and they bloat the tarball.
+src/*.test.ts
+
+# TypeScript build cache + tooling artifacts that occasionally end up
+# in src/ or dist/ during local builds.
+*.tsbuildinfo
+.DS_Store
+coverage/

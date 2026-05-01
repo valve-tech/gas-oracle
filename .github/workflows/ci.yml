@@ -1,0 +1,43 @@
+name: CI
+
+# Standard test + typecheck on every push and pull request. Kept
+# separate from release.yml so the publish workflow only runs on tags
+# and stays narrowly scoped on permissions.
+#
+# Security note: this workflow runs only the package's own scripts on
+# the package's own source. No untrusted user inputs (issue/PR titles,
+# commit messages, head refs) are interpolated into `run:` commands,
+# so the standard workflow-injection class doesn't apply.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+
+      - name: Typecheck
+        run: yarn typecheck
+
+      - name: Test
+        run: yarn test
+
+      - name: Build
+        run: yarn build
