@@ -34,12 +34,6 @@ jobs:
     permissions:
       id-token: write
       contents: read
-    # Use a deployment environment to gate publishing — lets you require
-    # manual approval, restrict secrets, and audit who triggered each
-    # release. Configure on GitHub: Settings → Environments → npm-publish.
-    environment:
-      name: npm-publish
-      url: https://www.npmjs.com/package/@valve-tech/gas-oracle
 
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +44,14 @@ jobs:
           # Setting registry-url configures npm CLI to talk to
           # npmjs.com — required for trusted publishing to negotiate.
           registry-url: 'https://registry.npmjs.org'
+
+      # Pinned npm 11.5.1+ for trusted-publisher OIDC. The npm 10.x
+      # default that ships with Node 22 has documented matcher quirks
+      # against npm's trusted-publisher claim validation. --force
+      # avoids the `Cannot find module 'promise-retry'` crash that
+      # happens when npm tries to self-upgrade mid-install.
+      - name: Upgrade npm to 11.5.1+
+        run: npm install -g --force npm@11.5.1
 
       # Yarn 4 (Berry) — install via corepack, frozen lockfile.
       - name: Install dependencies
