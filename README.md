@@ -1,5 +1,10 @@
 # @valve-tech/gas-oracle
 
+[![npm version](https://img.shields.io/npm/v/@valve-tech/gas-oracle)](https://www.npmjs.com/package/@valve-tech/gas-oracle)
+[![Types Included](https://img.shields.io/npm/types/@valve-tech/gas-oracle)](https://www.npmjs.com/package/@valve-tech/gas-oracle)
+[![SLSA Provenance](https://img.shields.io/badge/SLSA-provenance-blue)](https://docs.npmjs.com/generating-provenance-statements)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Multi-tier gas-fee oracle for EVM chains. Pass it a viem `PublicClient`
 and it polls block + mempool data, computes `slow` / `standard` /
 `fast` / `instant` tier recommendations, and serves them via an
@@ -7,6 +12,10 @@ in-memory cache. Includes a configurable downside-decay cap, a chain-
 aware EIP-1559 priority cutoff, and EIP-4844 blob-fee handling.
 
 Zero runtime dependencies. `viem` is the only peer dependency.
+
+> **AI agents:** see [`AGENTS.md`](AGENTS.md) for a terse, AI-first reference,
+> and [`skills/`](skills/) for Claude Code / Cursor skill files shipped in
+> `node_modules/`.
 
 ## Install
 

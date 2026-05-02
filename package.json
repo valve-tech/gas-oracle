@@ -1,6 +1,6 @@
 {
   "name": "@valve-tech/gas-oracle",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Multi-tier gas-fee oracle for EVM chains. Computes slow/standard/fast/instant tier recommendations from block-included tips, mempool pending tips, and base-fee trend, with a configurable downside-decay cap and a chain-aware EIP-1559 priority cutoff. viem-native — pass it a PublicClient and it does the rest. Ships viem-actions and viem-transport subpaths for drop-in client extension and transport-wrapping.",
   "license": "MIT",
   "homepage": "https://github.com/valve-tech/gas-oracle#readme",
@@ -42,12 +42,17 @@
   },
   "files": [
     "dist",
+    "skills",
     "README.md",
+    "AGENTS.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p .",
     "typecheck": "tsc -p . --noEmit",
+    "typecheck:examples": "tsc -p examples",
+    "lint": "eslint src",
     "test": "vitest run",
     "test:watch": "vitest",
     "prepare": "yarn build"
@@ -57,7 +62,11 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.59.1",
+    "@typescript-eslint/parser": "^8.59.1",
+    "eslint": "^10.3.0",
     "typescript": "^6.0.2",
+    "typescript-eslint": "^8.59.1",
     "viem": "^2.21.0",
     "vitest": "^4.1.4"
   }

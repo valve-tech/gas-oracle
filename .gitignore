@@ -7,3 +7,8 @@ dist/
 coverage/
 *.log
 .DS_Store
+
+# Local-only directory-scoped gitconfig override (loaded via includeIf
+# in ~/.gitconfig). Never commit — its contents depend on the local
+# checkout's identity setup.
+.gitconfig.valvecitydev

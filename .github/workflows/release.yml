@@ -59,8 +59,14 @@ jobs:
           corepack enable
           yarn install --immutable
 
+      - name: Lint
+        run: yarn lint
+
       - name: Typecheck
         run: yarn typecheck
+
+      - name: Typecheck examples
+        run: yarn typecheck:examples
 
       - name: Test
         run: yarn test
