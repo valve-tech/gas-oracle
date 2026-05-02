@@ -27,7 +27,7 @@ const oracle = createGasOracle({
   client,
   chainId: 1,
   priorityFeeDecayCap: parseEther('0.125'), // 12.5%/block, EIP-1559 parity
-  priorityModel: 'eip1559',                 // 'flat' for extractive networks
+  priorityModel: 'eip1559',                 // 'flat' for chains whose validators charge tips instead of burning them
 })
 
 oracle.subscribe((state) => {
