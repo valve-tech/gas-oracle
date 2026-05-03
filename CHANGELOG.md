@@ -5,6 +5,25 @@ All notable changes to `@valve-tech/gas-oracle` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.5] — 2026-05-03
+
+### Added
+- README **RPC transport modes** section covering all four caller-side
+  configurations the package supports: HTTP-only, WS-only, both (via viem's
+  `fallback`), and "neither" (driving the pure `reducePollInputs` reducer
+  with pre-fetched `OraclePollInputs` — no live `PublicClient` needed).
+- `examples/06-reducer-only.ts` exercising the offline path end-to-end with
+  synthetic fixture inputs, surfacing the `fetchOracleInputs` /
+  `reducePollInputs` export split that enables it.
+
+### Notes
+- Documentation-only release. No API changes; behavior identical to v0.2.4.
+- Picking WS today buys nothing functional over HTTP — the oracle never
+  opens a subscription. The functional case for WS arrives when
+  subscription-using features (e.g., tx-tracking via `newHeads` /
+  `newPendingTransactions`) land. Choose WS now only if upstream is cheaper
+  or lower-latency on it.
+
 ## [0.2.4] — 2026-05-02
 
 ### Added
