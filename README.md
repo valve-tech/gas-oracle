@@ -267,6 +267,72 @@ careful to avoid.
 synthesizing a historical-percentile array from oracle state is its
 own design problem. Always passes through to upstream.
 
+## RPC transport modes
+
+The package only ever calls `client.request({ method, params })` and
+never opens a subscription. That makes it transport-agnostic — any
+viem `Transport` works, and the four caller-side configurations below
+all run unchanged:
+
+### HTTP only
+
+```ts
+import { http } from 'viem'
+
+const client = createPublicClient({ chain: mainnet, transport: http(rpcUrl) })
+const oracle = createGasOracle({ client, chainId: 1 })
+```
+
+### WebSocket only
+
+```ts
+import { webSocket } from 'viem'
+
+const client = createPublicClient({ chain: mainnet, transport: webSocket(wsUrl) })
+const oracle = createGasOracle({ client, chainId: 1 })
+```
+
+WS works because the three RPCs the oracle issues (`eth_feeHistory`,
+`eth_getBlockByNumber`, `txpool_content`) are all request/response;
+viem's `webSocket` transport implements the same `request` interface
+as `http`. **Picking WS today buys nothing functional over HTTP** —
+the oracle still polls on its `pollIntervalMs`. The functional case
+for WS arrives when subscription-using features land (tx-tracking
+`newHeads` / `newPendingTransactions`); choose WS now only if your
+upstream is cheaper or lower-latency on it.
+
+### Both — `fallback` for resilience
+
+```ts
+import { fallback, http, webSocket } from 'viem'
+
+const transport = fallback([webSocket(wsUrl), http(rpcUrl)])
+const client = createPublicClient({ chain: mainnet, transport })
+const oracle = createGasOracle({ client, chainId: 1 })
+```
+
+viem handles failover transparently — if the WS drops, requests fall
+to HTTP without the oracle noticing.
+
+### Neither — pure reducer, no live RPC
+
+The oracle's I/O surface (`fetchOracleInputs`) and its math
+(`reducePollInputs`) are exported as separate top-level entries. That
+split is what enables the offline path: drive the reducer with
+`OraclePollInputs` from any source — fixture file, snapshot store,
+Kafka log, another service's API — and never touch a `PublicClient`.
+
+```ts
+import { reducePollInputs, type OraclePollInputs } from '@valve-tech/gas-oracle'
+
+const inputs: OraclePollInputs = await loadFromYourQueue()
+const state = reducePollInputs({ inputs, chainId: 1, prev: priorState })
+```
+
+Use cases: serverless / edge handlers, backtest harnesses replaying
+historical RPC payloads, tests asserting state shape from fixtures.
+See `examples/06-reducer-only.ts`.
+
 ## Wire format
 
 Every fee field is a `bigint`. Callers serializing across HTTP / Redis
