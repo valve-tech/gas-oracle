@@ -3,16 +3,18 @@
 | Field | Value |
 | --- | --- |
 | Status | Draft (pre-implementation) |
-| Target version | `0.3.0` |
-| Sub-export | `@valve-tech/gas-oracle/tx-tracker` |
+| Repo | `valve-tech/evm-toolkit` (monorepo) |
+| Packages affected | `@valve-tech/chain-source` (new, v0.1.0), `@valve-tech/tx-tracker` (new, v0.1.0), `@valve-tech/gas-oracle` (refactored to consume `ChainSource`, v0.3.0) |
 | Author | valve-tech |
 | Last updated | 2026-05-03 |
 
-This document is the **design contract** for the tx-tracker feature
-landing in `@valve-tech/gas-oracle@0.3.0`. It is the artifact that the
-implementation, the tests, the AI skills, and the example code all
-reconcile against. Iterate on this doc; don't iterate on the
-implementation in its absence.
+This document is the **design contract** for the v0.3.0 generation
+of the toolkit — `@valve-tech/chain-source@0.1.0` (new package),
+`@valve-tech/tx-tracker@0.1.0` (new package), and the
+`@valve-tech/gas-oracle@0.3.0` migration to consume `ChainSource`. It
+is the artifact that the implementation, the tests, the AI skills,
+and the example code all reconcile against. Iterate on this doc;
+don't iterate on the implementation in its absence.
 
 ---
 
@@ -138,9 +140,9 @@ expose `newPendingTransactions`. A single "ws or http?" knob would
 elide cases the spec needs to cover (per user requirement: "even on a
 per method basis").
 
-### 2.4 Browser/mobile safe — no Node-only deps in the sub-export
+### 2.4 Browser/mobile safe — no Node-only deps in the package
 
-`@valve-tech/gas-oracle/tx-tracker` must build cleanly for browser,
+`@valve-tech/tx-tracker` must build cleanly for browser,
 React Native, and edge runtimes. No `events` (Node's EventEmitter), no
 `fs`, no `setImmediate`, no Node-only Buffer manipulation. The internal
 pub/sub primitive is hand-rolled (see §5.1) — small enough that the
@@ -314,61 +316,83 @@ ecosystem has migrated.
 ### 3.4 New files
 
 ```
-src/
-├── chain-source/
-│   ├── index.ts            Re-exports.
-│   ├── source.ts           createChainSource factory.
-│   ├── capabilities.ts     probeCapabilities(client) — used by source
-│   │                       at startup and on transport reconnect.
-│   ├── poll-loop.ts        Pure tick logic (block + mempool + feeHistory
-│   │                       fan-out). Reuses fetchOracleInputs internals.
-│   ├── subscriptions.ts    The shared pub/sub primitive (§5.1).
-│   └── *.test.ts
-├── tx-tracker/
-│   ├── index.ts            Re-exports — public surface only.
-│   ├── tracker.ts          createTxTracker factory + per-tx state machine.
-│   ├── events.ts           TxEvent discriminated-union + payload builders.
-│   ├── store.ts            TxTrackerStore interface + createInMemoryStore.
-│   ├── reorg.ts            Reorg detector (pure function over block ring).
-│   ├── selectors.ts        Bulk-subscription matchers (by-from, by-to,
-│   │                       predicate).
-│   └── *.test.ts
-└── (existing files: oracle.ts updated to consume ChainSource;
-   primitive-layer files unchanged)
+packages/
+├── chain-source/                 NEW package
+│   └── src/
+│       ├── index.ts              Re-exports.
+│       ├── source.ts             createChainSource factory.
+│       ├── capabilities.ts       probeCapabilities(client) — used by source
+│       │                          at startup and on transport reconnect.
+│       ├── poll-loop.ts          Pure tick logic (block + mempool + feeHistory
+│       │                          fan-out). Subsumes the existing
+│       │                          fetchOracleInputs.
+│       ├── subscriptions.ts      The shared pub/sub primitive (§5.1).
+│       └── *.test.ts
+├── tx-tracker/                   NEW package
+│   └── src/
+│       ├── index.ts              Re-exports — public surface only.
+│       ├── tracker.ts            createTxTracker factory + per-tx state machine.
+│       ├── events.ts             TxEvent discriminated-union + payload builders.
+│       ├── store.ts              TxTrackerStore interface + createInMemoryStore.
+│       ├── reorg.ts              Reorg detector (pure function over block ring).
+│       ├── selectors.ts          Bulk-subscription matchers.
+│       └── *.test.ts
+└── gas-oracle/                   EXISTING package (refactor only)
+    └── src/
+        ├── oracle.ts             Updated to consume ChainSource via
+        │                          options.source; `client` shorthand
+        │                          internally constructs a private source.
+        └── (other files unchanged)
 ```
 
-### 3.5 Sub-exports
+### 3.5 Package imports
 
 ```ts
-// Existing:
+// Existing (continues from v0.2.x):
 import { createGasOracle } from '@valve-tech/gas-oracle'
 
-// NEW in v0.3.0:
-import { createChainSource } from '@valve-tech/gas-oracle/chain-source'
+// NEW in v0.3.0 — separate npm packages, all in the same monorepo:
+import { createChainSource } from '@valve-tech/chain-source'
 import { createTxTracker, createInMemoryStore }
-  from '@valve-tech/gas-oracle/tx-tracker'
+  from '@valve-tech/tx-tracker'
 ```
 
-Two new sub-export paths. The base entry `@valve-tech/gas-oracle`
-keeps its existing surface (and gets the `source?` field on
-`CreateGasOracleOptions` as additive).
+Two new packages, each with its own `package.json`, version, and
+release cadence. `@valve-tech/gas-oracle` keeps its existing public
+surface (and gets the `source?` field on `CreateGasOracleOptions` as
+additive).
 
-### 3.6 `package.json` changes
+### 3.6 Inter-package dependency graph
 
 ```jsonc
+// packages/chain-source/package.json
 {
-  "exports": {
-    ".":                { "types": "./dist/index.d.ts",                "import": "./dist/index.js" },
-    "./viem-actions":   { "types": "./dist/viem-actions.d.ts",         "import": "./dist/viem-actions.js" },
-    "./viem-transport": { "types": "./dist/viem-transport.d.ts",       "import": "./dist/viem-transport.js" },
-    "./chain-source":   { "types": "./dist/chain-source/index.d.ts",   "import": "./dist/chain-source/index.js" },
-    "./tx-tracker":     { "types": "./dist/tx-tracker/index.d.ts",     "import": "./dist/tx-tracker/index.js" }
-  }
+  "name": "@valve-tech/chain-source",
+  "peerDependencies": { "viem": "^2.0.0" }
+}
+
+// packages/gas-oracle/package.json
+{
+  "name": "@valve-tech/gas-oracle",
+  "dependencies": { "@valve-tech/chain-source": "workspace:^" },
+  "peerDependencies": { "viem": "^2.0.0" }
+}
+
+// packages/tx-tracker/package.json
+{
+  "name": "@valve-tech/tx-tracker",
+  "dependencies": { "@valve-tech/chain-source": "workspace:^" },
+  "peerDependencies": { "viem": "^2.0.0" }
 }
 ```
 
-No new runtime dependencies. `viem ^2.0.0` peer remains the only
-peer dep.
+`workspace:^` is rewritten to a real semver range (`^0.x.y` matching
+the chain-source version at publish time) by yarn during
+`npm publish`. Consumers see normal semver-resolved deps, not
+workspace protocols.
+
+No new runtime dependencies beyond the toolkit's own packages.
+`viem ^2.0.0` peer remains the only external peer dep.
 
 ---
 
@@ -377,17 +401,19 @@ peer dep.
 `0.3.0` — additive, backward-compatible at the call-site level.
 Three things land together:
 
-1. **`createChainSource`** — new sub-export `@valve-tech/gas-oracle/chain-source`.
-2. **`createTxTracker`** — new sub-export `@valve-tech/gas-oracle/tx-tracker`.
-3. **`createGasOracle({ source })`** — additive option on the existing
-   factory, with `createGasOracle({ client })` preserved as the
-   backward-compat shorthand (existing call sites work byte-for-byte
-   unchanged).
+1. **`@valve-tech/chain-source@0.1.0`** — first real release of the
+   new package (current `0.0.1` is a stub claiming the npm name).
+2. **`@valve-tech/tx-tracker@0.1.0`** — first real release of the
+   new package (current `0.0.1` is a stub claiming the npm name).
+3. **`@valve-tech/gas-oracle@0.3.0`** — `createGasOracle({ source })`
+   added as additive option, with `createGasOracle({ client })`
+   preserved as the backward-compat shorthand (existing call sites
+   work byte-for-byte unchanged).
 
-The viem-actions and viem-transport sub-exports get an internal
-refactor (they construct a private `ChainSource` instead of calling
-the legacy poll loop directly) but their public surface does not
-change.
+The viem-actions and viem-transport sub-exports of `@valve-tech/gas-oracle`
+get an internal refactor (they construct a private `ChainSource`
+instead of calling the legacy poll loop directly) but their public
+surface does not change.
 
 A consumer who wants the new layering opts in by constructing their
 own source; a consumer who doesn't keeps the v0.2.x shape and never
@@ -763,7 +789,7 @@ interface Capabilities {
 Capability is owned by `ChainSource`, not by the tracker. At
 `source.start()` (or on first use under a `lazy`-configured source),
 the source fires four probes, all wrapped in the existing
-`safeRequest` pattern from `src/transport.ts:74` (turn errors into
+`safeRequest` pattern from `packages/gas-oracle/src/transport.ts:74` (turn errors into
 `null`, never throw):
 
 1. `client.transport.subscribe?.('newHeads')` — if the transport
@@ -1133,9 +1159,9 @@ either direction. A consumer who wants both reads from a shared source:
 ```ts
 import { createPublicClient, http } from 'viem'
 import { mainnet } from 'viem/chains'
-import { createChainSource } from '@valve-tech/gas-oracle/chain-source'
+import { createChainSource } from '@valve-tech/chain-source'
 import { createGasOracle } from '@valve-tech/gas-oracle'
-import { createTxTracker } from '@valve-tech/gas-oracle/tx-tracker'
+import { createTxTracker } from '@valve-tech/tx-tracker'
 
 const client = createPublicClient({ chain: mainnet, transport: http() })
 
@@ -1238,8 +1264,8 @@ non-durable" carve-out.
 // Track a single hash with the async iterator. Tracker only — no oracle.
 import { createPublicClient, http } from 'viem'
 import { mainnet } from 'viem/chains'
-import { createChainSource } from '@valve-tech/gas-oracle/chain-source'
-import { createTxTracker } from '@valve-tech/gas-oracle/tx-tracker'
+import { createChainSource } from '@valve-tech/chain-source'
+import { createTxTracker } from '@valve-tech/tx-tracker'
 
 const client  = createPublicClient({ chain: mainnet, transport: http() })
 const source  = createChainSource({ client })
@@ -1261,9 +1287,9 @@ source.stop()
 ### 16.2 `examples/08-tx-tracker-with-oracle.ts` — shared `ChainSource`
 
 ```ts
-import { createChainSource } from '@valve-tech/gas-oracle/chain-source'
+import { createChainSource } from '@valve-tech/chain-source'
 import { createGasOracle } from '@valve-tech/gas-oracle'
-import { createTxTracker } from '@valve-tech/gas-oracle/tx-tracker'
+import { createTxTracker } from '@valve-tech/tx-tracker'
 
 const source  = createChainSource({ client })
 const oracle  = createGasOracle({ source, chainId: 1, priorityModel: 'eip1559' })
@@ -1303,7 +1329,7 @@ The tracker is a pure state-machine over event streams; testing it is
 mostly about driving fixture event sequences and asserting the emitted
 events. Layered:
 
-### 17.1 Unit tests (`src/tx-tracker/*.test.ts`)
+### 17.1 Unit tests (`packages/tx-tracker/src/*.test.ts`)
 
 - `events.test.ts` — event-builder helpers, payload shape correctness,
   envelope completeness.
@@ -1318,7 +1344,7 @@ events. Layered:
   log capacity, durable list.
 - `selectors.test.ts` — bulk matchers across `from` / `to` / predicate.
 
-### 17.2 Integration tests (`src/tx-tracker/tracker.test.ts`)
+### 17.2 Integration tests (`packages/tx-tracker/src/tracker.test.ts`)
 
 - Drive `createTxTracker` with a stub `ChainSource` — a hand-rolled
   object implementing the §3.2 interface, no live RPC. The
@@ -1332,9 +1358,9 @@ events. Layered:
   before confirmation, replacement-by-bumped-tip, dropped tx,
   WS-drop-mid-tracking (re-probe), durable subscription resume.
 
-A separate suite (`src/chain-source/source.test.ts`) tests the source
-itself: probe behavior, push/poll fan-out, multi-subscriber correctness
-(N subscribers see identical streams), reconnect re-probe.
+A separate suite (`packages/chain-source/src/source.test.ts`) tests
+the source itself: probe behavior, push/poll fan-out, multi-subscriber
+correctness (N subscribers see identical streams), reconnect re-probe.
 
 ### 17.3 Capability-matrix matrix tests
 

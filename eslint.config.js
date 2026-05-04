@@ -9,7 +9,7 @@ import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'node_modules/**', '.yarn/**', 'examples/tsconfig.json'],
+    ignores: ['**/dist/**', '**/node_modules/**', '.yarn/**', '**/examples/tsconfig.json'],
   },
   ...tseslint.configs.recommended,
   {

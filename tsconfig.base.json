@@ -10,11 +10,7 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "outDir": "dist",
-    "rootDir": "src",
     "composite": true,
     "skipLibCheck": true
-  },
-  "include": ["src"],
-  "exclude": ["src/**/*.test.ts"]
+  }
 }

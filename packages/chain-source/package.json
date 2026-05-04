@@ -1,0 +1,48 @@
+{
+  "name": "@valve-tech/chain-source",
+  "version": "0.0.1",
+  "description": "Canonical EVM chain-observation primitive: a unified push-or-poll source for new blocks, mempool snapshots, on-demand receipt + tx lookups, and capability disclosure (HTTP / WS / per-method gating). Used as the shared foundation by @valve-tech/gas-oracle and @valve-tech/tx-tracker; consumable directly by anyone building their own derived view on chain state. viem-native. Implementation lands in v0.1.0 — this 0.0.1 stub claims the npm name.",
+  "license": "MIT",
+  "homepage": "https://github.com/valve-tech/evm-toolkit/tree/main/packages/chain-source#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/valve-tech/evm-toolkit.git",
+    "directory": "packages/chain-source"
+  },
+  "bugs": {
+    "url": "https://github.com/valve-tech/evm-toolkit/issues"
+  },
+  "keywords": [
+    "ethereum",
+    "evm",
+    "viem",
+    "rpc",
+    "mempool",
+    "subscription",
+    "chain-observer"
+  ],
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p .",
+    "typecheck": "tsc -p . --noEmit",
+    "lint": "eslint src",
+    "test": "vitest run",
+    "prepare": "yarn build"
+  },
+  "peerDependencies": {
+    "viem": "^2.0.0"
+  }
+}

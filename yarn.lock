@@ -554,9 +554,17 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@valve-tech/gas-oracle@workspace:.":
+"@valve-tech/chain-source@workspace:^, @valve-tech/chain-source@workspace:packages/chain-source":
   version: 0.0.0-use.local
-  resolution: "@valve-tech/gas-oracle@workspace:."
+  resolution: "@valve-tech/chain-source@workspace:packages/chain-source"
+  peerDependencies:
+    viem: ^2.0.0
+  languageName: unknown
+  linkType: soft
+
+"@valve-tech/evm-toolkit@workspace:.":
+  version: 0.0.0-use.local
+  resolution: "@valve-tech/evm-toolkit@workspace:."
   dependencies:
     "@types/node": "npm:^22.0.0"
     "@typescript-eslint/eslint-plugin": "npm:^8.59.1"
@@ -566,6 +574,22 @@ __metadata:
     typescript-eslint: "npm:^8.59.1"
     viem: "npm:^2.21.0"
     vitest: "npm:^4.1.4"
+  languageName: unknown
+  linkType: soft
+
+"@valve-tech/gas-oracle@workspace:packages/gas-oracle":
+  version: 0.0.0-use.local
+  resolution: "@valve-tech/gas-oracle@workspace:packages/gas-oracle"
+  peerDependencies:
+    viem: ^2.0.0
+  languageName: unknown
+  linkType: soft
+
+"@valve-tech/tx-tracker@workspace:packages/tx-tracker":
+  version: 0.0.0-use.local
+  resolution: "@valve-tech/tx-tracker@workspace:packages/tx-tracker"
+  dependencies:
+    "@valve-tech/chain-source": "workspace:^"
   peerDependencies:
     viem: ^2.0.0
   languageName: unknown

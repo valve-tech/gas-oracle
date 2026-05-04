@@ -1,10 +1,14 @@
 node_modules/
+**/node_modules/
 dist/
+**/dist/
 *.tsbuildinfo
+**/*.tsbuildinfo
 .yarn/cache
 .yarn/install-state.gz
 .pnp.*
 coverage/
+**/coverage/
 *.log
 .DS_Store
 

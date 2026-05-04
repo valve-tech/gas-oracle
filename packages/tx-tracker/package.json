@@ -1,0 +1,53 @@
+{
+  "name": "@valve-tech/tx-tracker",
+  "version": "0.0.1",
+  "description": "Per-tx state machine for EVM chains: emits neutral observations (`seen-in-mempool`, `seen-in-block`, `replaced-by`, `vanished-from-block`, `unseen-for-N-blocks`, etc.) so wallet UIs, indexers, and relays can write their own interpretations on top. Three consumption shapes (callback, async iterator, snapshot) over one push-based core. Per-method capability detection — works on HTTP, WS, both, or neither. Implementation lands in v0.1.0 — this 0.0.1 stub claims the npm name.",
+  "license": "MIT",
+  "homepage": "https://github.com/valve-tech/evm-toolkit/tree/main/packages/tx-tracker#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/valve-tech/evm-toolkit.git",
+    "directory": "packages/tx-tracker"
+  },
+  "bugs": {
+    "url": "https://github.com/valve-tech/evm-toolkit/issues"
+  },
+  "keywords": [
+    "ethereum",
+    "evm",
+    "viem",
+    "transaction",
+    "tx",
+    "tracker",
+    "mempool",
+    "reorg",
+    "indexer"
+  ],
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p .",
+    "typecheck": "tsc -p . --noEmit",
+    "lint": "eslint src",
+    "test": "vitest run",
+    "prepare": "yarn build"
+  },
+  "peerDependencies": {
+    "viem": "^2.0.0"
+  },
+  "dependencies": {
+    "@valve-tech/chain-source": "workspace:^"
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "name": "@valve-tech/gas-oracle",
+  "version": "0.2.5",
+  "description": "Multi-tier gas-fee oracle for EVM chains. Computes slow/standard/fast/instant tier recommendations from block-included tips, mempool pending tips, and base-fee trend, with a configurable downside-decay cap and a chain-aware EIP-1559 priority cutoff. viem-native — pass it a PublicClient and it does the rest. Ships viem-actions and viem-transport subpaths for drop-in client extension and transport-wrapping.",
+  "license": "MIT",
+  "homepage": "https://github.com/valve-tech/evm-toolkit/tree/main/packages/gas-oracle#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/valve-tech/evm-toolkit.git",
+    "directory": "packages/gas-oracle"
+  },
+  "bugs": {
+    "url": "https://github.com/valve-tech/evm-toolkit/issues"
+  },
+  "keywords": [
+    "ethereum",
+    "evm",
+    "gas",
+    "gas-oracle",
+    "gas-price",
+    "eip-1559",
+    "fee-market",
+    "viem",
+    "mempool"
+  ],
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./viem-actions": {
+      "types": "./dist/viem-actions.d.ts",
+      "import": "./dist/viem-actions.js"
+    },
+    "./viem-transport": {
+      "types": "./dist/viem-transport.d.ts",
+      "import": "./dist/viem-transport.js"
+    }
+  },
+  "files": [
+    "dist",
+    "skills",
+    "README.md",
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p .",
+    "typecheck": "tsc -p . --noEmit",
+    "typecheck:examples": "tsc -p examples",
+    "lint": "eslint src",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepare": "yarn build"
+  },
+  "peerDependencies": {
+    "viem": "^2.0.0"
+  }
+}

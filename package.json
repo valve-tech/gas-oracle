@@ -1,64 +1,28 @@
 {
-  "name": "@valve-tech/gas-oracle",
-  "version": "0.2.5",
-  "description": "Multi-tier gas-fee oracle for EVM chains. Computes slow/standard/fast/instant tier recommendations from block-included tips, mempool pending tips, and base-fee trend, with a configurable downside-decay cap and a chain-aware EIP-1559 priority cutoff. viem-native — pass it a PublicClient and it does the rest. Ships viem-actions and viem-transport subpaths for drop-in client extension and transport-wrapping.",
+  "name": "@valve-tech/evm-toolkit",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Monorepo root for valve-tech's EVM-side toolkit packages: @valve-tech/chain-source, @valve-tech/gas-oracle, @valve-tech/tx-tracker. Not published.",
   "license": "MIT",
-  "homepage": "https://github.com/valve-tech/gas-oracle#readme",
+  "homepage": "https://github.com/valve-tech/evm-toolkit#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/valve-tech/gas-oracle.git"
+    "url": "git+https://github.com/valve-tech/evm-toolkit.git"
   },
   "bugs": {
-    "url": "https://github.com/valve-tech/gas-oracle/issues"
+    "url": "https://github.com/valve-tech/evm-toolkit/issues"
   },
-  "keywords": [
-    "ethereum",
-    "evm",
-    "gas",
-    "gas-oracle",
-    "gas-price",
-    "eip-1559",
-    "fee-market",
-    "viem",
-    "mempool"
-  ],
   "type": "module",
   "packageManager": "yarn@4.14.1",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    },
-    "./viem-actions": {
-      "types": "./dist/viem-actions.d.ts",
-      "import": "./dist/viem-actions.js"
-    },
-    "./viem-transport": {
-      "types": "./dist/viem-transport.d.ts",
-      "import": "./dist/viem-transport.js"
-    }
-  },
-  "files": [
-    "dist",
-    "skills",
-    "README.md",
-    "AGENTS.md",
-    "CHANGELOG.md",
-    "LICENSE"
+  "workspaces": [
+    "packages/*"
   ],
   "scripts": {
-    "build": "tsc -p .",
-    "typecheck": "tsc -p . --noEmit",
-    "typecheck:examples": "tsc -p examples",
-    "lint": "eslint src",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "prepare": "yarn build"
-  },
-  "peerDependencies": {
-    "viem": "^2.0.0"
+    "build": "yarn workspaces foreach --all --topological --exclude @valve-tech/evm-toolkit run build",
+    "typecheck": "yarn workspaces foreach --all --exclude @valve-tech/evm-toolkit run typecheck",
+    "typecheck:examples": "yarn workspace @valve-tech/gas-oracle run typecheck:examples",
+    "lint": "yarn workspaces foreach --all --exclude @valve-tech/evm-toolkit run lint",
+    "test": "yarn workspaces foreach --all --exclude @valve-tech/evm-toolkit run test"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

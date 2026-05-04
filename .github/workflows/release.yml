@@ -1,59 +1,83 @@
 name: Release
 
-# Publishes @valve-tech/gas-oracle to npm using Trusted Publishers (OIDC).
-# No NPM_TOKEN secret required — npm verifies the GitHub OIDC claim
-# (repo + workflow path + environment) against a trusted-publisher
-# config maintained at https://npmjs.com/settings/valve-tech/publishing.
+# Publishes one workspace package to npm using Trusted Publishers
+# (OIDC). No NPM_TOKEN secret required — npm verifies the GitHub OIDC
+# claim (repo + workflow path + environment) against a per-package
+# trusted-publisher config maintained at
+# https://npmjs.com/settings/valve-tech/publishing.
 #
-# Trigger: push a tag matching `v*` (e.g. `v0.2.0`). Manual dispatch is
-# also enabled for one-off republishes (e.g. recovering from a tag typo).
+# Trigger: push a tag matching `<package>/v*` —
+#   gas-oracle/v0.3.0   → publishes packages/gas-oracle
+#   chain-source/v0.1.0 → publishes packages/chain-source
+#   tx-tracker/v0.1.0   → publishes packages/tx-tracker
 #
-# First-publish note: npm supports "pending" trusted publishers — the
-# very first run that matches the configured publisher will create the
-# package and scope AND publish it. Subsequent runs treat the publisher
-# as active.
+# Manual dispatch is also enabled for one-off republishes (e.g.
+# recovering from a tag typo) — provide the same `<package>/v<version>`
+# value as the input, no leading refs/tags/.
 #
-# Security note: this workflow only consumes commit metadata via
-# actions/checkout (which sanitizes inputs). No untrusted user inputs
-# (issue/PR titles, commit messages, head refs) are interpolated into
-# `run:` commands, so the standard workflow-injection class doesn't
-# apply.
+# First-publish note: each new package's first publish must be done
+# manually from a maintainer's machine (`npm publish --access public`)
+# to claim the npm name. The trusted-publisher record can then be
+# configured at npmjs.com, and subsequent publishes go through this
+# workflow. See `.claude/skills/releasing-evm-toolkit/SKILL.md` for
+# the full first-publish dance.
+#
+# Security note: this workflow consumes the tag name from
+# `github.ref_name` only via an environment variable, never
+# interpolated into a `run:` shell directly. Tag names can contain
+# arbitrary text, so the env-var indirection is the safe form.
 
 on:
   push:
     tags:
-      - 'v*'
+      - 'gas-oracle/v*'
+      - 'chain-source/v*'
+      - 'tx-tracker/v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. "gas-oracle/v0.3.0"). Must already exist in the repo.'
+        required: true
+        type: string
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    # `id-token: write` is what lets the runner mint the OIDC JWT npm
-    # uses to verify provenance. `contents: read` is the minimum
-    # checkout needs. Nothing else is granted — least-privilege.
     permissions:
       id-token: write
       contents: read
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Parse tag into package + version
+        id: parse
+        env:
+          TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          if [[ ! "$TAG_NAME" =~ ^([a-z][a-z0-9-]*)/v([0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9.-]+)?)$ ]]; then
+            echo "Tag '$TAG_NAME' does not match expected '<package>/v<version>' format" >&2
+            exit 1
+          fi
+          package="${BASH_REMATCH[1]}"
+          version="${BASH_REMATCH[2]}"
+          if [[ ! -d "packages/$package" ]]; then
+            echo "No packages/$package/ directory in repo" >&2
+            exit 1
+          fi
+          echo "package=$package" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          # Setting registry-url configures npm CLI to talk to
-          # npmjs.com — required for trusted publishing to negotiate.
           registry-url: 'https://registry.npmjs.org'
 
-      # Pinned npm 11.5.1+ for trusted-publisher OIDC. The npm 10.x
-      # default that ships with Node 22 has documented matcher quirks
-      # against npm's trusted-publisher claim validation. --force
-      # avoids the `Cannot find module 'promise-retry'` crash that
-      # happens when npm tries to self-upgrade mid-install.
       - name: Upgrade npm to 11.5.1+
         run: npm install -g --force npm@11.5.1
 
-      # Yarn 4 (Berry) — install via corepack, frozen lockfile.
       - name: Install dependencies
         run: |
           corepack enable
@@ -74,8 +98,20 @@ jobs:
       - name: Build
         run: yarn build
 
-      # `--provenance` attaches a SLSA build attestation signed by the
-      # GitHub OIDC token. `--access public` is required on the first
-      # publish for scoped packages (npm defaults to private otherwise).
+      - name: Verify package version matches tag
+        env:
+          PACKAGE: ${{ steps.parse.outputs.package }}
+          VERSION: ${{ steps.parse.outputs.version }}
+        run: |
+          pkg_version="$(node -p "require('./packages/$PACKAGE/package.json').version")"
+          if [[ "$pkg_version" != "$VERSION" ]]; then
+            echo "packages/$PACKAGE/package.json version is '$pkg_version' but tag is 'v$VERSION'" >&2
+            exit 1
+          fi
+
       - name: Publish to npm
-        run: npm publish --access public --provenance
+        env:
+          PACKAGE: ${{ steps.parse.outputs.package }}
+        run: |
+          cd "packages/$PACKAGE"
+          npm publish --access public --provenance

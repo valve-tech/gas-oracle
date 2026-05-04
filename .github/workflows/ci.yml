@@ -1,11 +1,12 @@
 name: CI
 
-# Standard test + typecheck on every push and pull request. Kept
-# separate from release.yml so the publish workflow only runs on tags
-# and stays narrowly scoped on permissions.
+# Standard test + typecheck on every push and pull request. Runs once
+# at the workspace root, walking every package via yarn workspaces
+# foreach. Kept separate from release.yml so the publish workflow
+# only runs on tags and stays narrowly scoped on permissions.
 #
-# Security note: this workflow runs only the package's own scripts on
-# the package's own source. No untrusted user inputs (issue/PR titles,
+# Security note: this workflow runs only the repo's own scripts on
+# the repo's own source. No untrusted user inputs (issue/PR titles,
 # commit messages, head refs) are interpolated into `run:` commands,
 # so the standard workflow-injection class doesn't apply.
 
