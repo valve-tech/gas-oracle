@@ -126,11 +126,11 @@ evm-toolkit/                    repo root, package name @valve-tech/evm-toolkit 
 ├── docs/                       cross-cutting design docs (tx-tracker-spec.md)
 ├── .claude/skills/             project-local AI skills — does NOT ship to npm
 │   ├── contributing-to-evm-toolkit/    this file
-│   └── releasing-evm-toolkit/          per-package release flow
+│   └── releasing-evm-toolkit/          synced release flow (single vX.Y.Z tag)
 ├── examples/                   future cross-package examples (currently empty)
 ├── .github/workflows/
 │   ├── ci.yml                  runs lint/typecheck/test/build at workspace root
-│   └── release.yml             tag-driven, per-package via `<package>/v*` pattern
+│   └── release.yml             tag-driven, synced via single `v*` pattern
 ├── package.json                root: "private": true, workspaces, hoisted dev-deps
 ├── tsconfig.base.json          shared compiler options; per-package extends
 ├── eslint.config.js            workspace-wide
@@ -278,16 +278,18 @@ These have all been considered and rejected. Don't reintroduce them:
 
 ## Version / release coupling
 
-A change to a single package that touches consumer-visible behavior
-(its `dist/`, `README.md`, `AGENTS.md`, `examples/` referenced from
-README, or `skills/`) needs a version bump and a CHANGELOG entry **in
-the same PR** for that one package. Other packages stay at their
-current versions.
+**Versioning is synced across all packages.** A change to any
+package that touches consumer-visible behavior (its `dist/`,
+`README.md`, `AGENTS.md`, `examples/` referenced from its README, or
+`skills/`) bumps **every** package in the workspace to the same new
+version, even ones with no functional changes. Per-package CHANGELOG
+entries note "Synchronized release — no changes to this package" for
+the no-op case.
 
 The repo's release pattern: PR title is
-`chore(release): <package>/vX.Y.Z — short summary`, squash-merged,
-then a signed tag `<package>/vX.Y.Z` push fires the publish
-workflow for that package only.
+`chore(release): vX.Y.Z — short summary`, squash-merged, then a
+signed tag `vX.Y.Z` push fires the publish workflow which publishes
+all three packages in topological order.
 
 A change that only touches `.claude/`, `docs/`, `.github/`, root
 configs, or other non-published files does **not** need any version

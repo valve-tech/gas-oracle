@@ -398,35 +398,40 @@ No new runtime dependencies beyond the toolkit's own packages.
 
 ## 4. Versioning
 
-`0.3.0` — additive, backward-compatible at the call-site level.
-Three things land together:
+**Synchronized.** Every published release of the `valve-tech/evm-toolkit`
+monorepo bumps all three packages to the same version under a single
+`vX.Y.Z` tag. `chain-source`, `gas-oracle`, and `tx-tracker` always
+share the same version on npm.
 
-1. **`@valve-tech/chain-source@0.1.0`** — first real release of the
-   new package (current `0.0.1` is a stub claiming the npm name).
-2. **`@valve-tech/tx-tracker@0.1.0`** — first real release of the
-   new package (current `0.0.1` is a stub claiming the npm name).
-3. **`@valve-tech/gas-oracle@0.3.0`** — `createGasOracle({ source })`
-   added as additive option, with `createGasOracle({ client })`
-   preserved as the backward-compat shorthand (existing call sites
-   work byte-for-byte unchanged).
+The first synced release was `v0.3.0`, which:
 
-The viem-actions and viem-transport sub-exports of `@valve-tech/gas-oracle`
-get an internal refactor (they construct a private `ChainSource`
-instead of calling the legacy poll loop directly) but their public
-surface does not change.
+- Initialized `@valve-tech/chain-source@0.3.0` and
+  `@valve-tech/tx-tracker@0.3.0` as name-reservation stubs (both
+  `export {}` — actual implementation lands in subsequent 0.3.x
+  releases per this spec).
+- Bumped `@valve-tech/gas-oracle@0.2.5 → 0.3.0` with the idle-traffic
+  controls (`pauseWhenIdle`, `staleAfter`, `blockGatedPolling`,
+  `pauseWhenHidden`, `sampleGasFees`).
 
-A consumer who wants the new layering opts in by constructing their
-own source; a consumer who doesn't keeps the v0.2.x shape and never
-sees the new types.
+Subsequent 0.3.x releases land the chain-source / tx-tracker
+implementation incrementally, with gas-oracle migrating to consume
+`ChainSource` (additive — `createGasOracle({ client })` continues to
+work byte-for-byte unchanged via an internal compat shim).
 
-A breaking change (e.g., removing the `client` shorthand) is reserved
-for a future `0.4.0` major. Under pre-1.0 SemVer strictness, this
-project treats "breaking = bump the second digit." See
-`releasing-gas-oracle/SKILL.md`.
+The viem-actions and viem-transport sub-exports of
+`@valve-tech/gas-oracle` get an internal refactor in due course (they
+construct a private `ChainSource` instead of calling the legacy poll
+loop directly) but their public surface does not change.
 
-If during implementation the tracker reveals a primitive-layer change
-(e.g., a new field needed on `BlockSample` for reorg detection), that
-change is additive on its types and stays a `0.3.0` minor.
+A breaking change (e.g., removing the `client` shorthand on
+`createGasOracle`) is reserved for `0.4.0`. Under pre-1.0 SemVer
+strictness, this project treats "breaking = bump the second digit."
+See `.claude/skills/releasing-evm-toolkit/SKILL.md`.
+
+Because versioning is synced, packages without changes for a release
+still bump (in lockstep) and get a short CHANGELOG entry noting
+"Synchronized release — no changes to this package." This keeps
+consumers' `npm view` honest across the toolkit.
 
 ---
 

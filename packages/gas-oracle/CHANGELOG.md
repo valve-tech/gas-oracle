@@ -5,7 +5,14 @@ All notable changes to `@valve-tech/gas-oracle` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.2.6] — 2026-05-04
+## [0.3.0] — 2026-05-04
+
+> **First synchronized release in the `valve-tech/evm-toolkit`
+> monorepo.** All three packages
+> (`@valve-tech/chain-source`, `@valve-tech/gas-oracle`,
+> `@valve-tech/tx-tracker`) now ship in lockstep. Future releases use
+> a single `vX.Y.Z` tag on the repo. See the toolkit-level CHANGELOG
+> at the repo root for cross-package context.
 
 ### Added
 - `pauseWhenIdle` option on `CreateGasOracleOptions` (default `true`).

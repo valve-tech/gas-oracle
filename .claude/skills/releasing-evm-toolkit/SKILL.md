@@ -1,130 +1,159 @@
 ---
 name: releasing-evm-toolkit
-description: Use when cutting a release of any package in the `valve-tech/evm-toolkit` monorepo (`@valve-tech/chain-source`, `@valve-tech/gas-oracle`, `@valve-tech/tx-tracker`) to npm — bumping that one package's version, updating its CHANGELOG, opening the release PR, tagging with the per-package format, and verifying the OIDC publish landed. Trigger on phrases like "release gas-oracle v0.X.Y", "publish chain-source to npm", "ship a tx-tracker release", "cut a release", "bump the version of <package>", "tag this", or when the user has just merged consumer-visible changes to one package and is asking how to get them onto npm. Covers the exact PR-title format, the signed per-package tag requirement, the OIDC publish workflow trigger, the manual-first-publish dance for any new package being added, and the common failure modes (1Password agent locked for tag signing, unbumped version, missing CHANGELOG, wrong tag pattern, OIDC trusted-publisher record not yet configured).
+description: Use when cutting a release of the `valve-tech/evm-toolkit` monorepo to npm — bumping every workspace package's version in lockstep, updating per-package CHANGELOGs and the root CHANGELOG, opening the release PR, tagging with `vX.Y.Z`, and verifying the OIDC publish landed for all three packages (`@valve-tech/chain-source`, `@valve-tech/gas-oracle`, `@valve-tech/tx-tracker`). Trigger on phrases like "release v0.X.Y", "publish to npm", "ship a release", "cut a release", "bump the toolkit version", "tag this", or when the user has just merged consumer-visible changes and is asking how to get them onto npm. Covers synchronized versioning (all packages move together), the exact PR-title format, the signed-tag requirement, the OIDC publish workflow trigger, the manual-first-publish dance for any new package being added, and the common failure modes.
 ---
 
-# Releasing `valve-tech/evm-toolkit` packages
+# Releasing `valve-tech/evm-toolkit`
 
-The toolkit publishes each package to npm independently via GitHub
-Actions OIDC trusted publishing. There is **no `NPM_TOKEN` secret** —
-the workflow mints an OIDC JWT that npm validates against per-package
-trusted-publisher records. The publish flow is entirely **tag-driven
-and per-package**.
+The toolkit uses **synchronized versioning** — every release is a
+single `vX.Y.Z` tag that bumps **all** publishable workspace packages
+in lockstep, and the OIDC publish workflow publishes them all from the
+same tag.
 
-Every release is one PR, one squash-commit, one signed per-package
-tag, one workflow run, one published version on npm.
+There is **no `NPM_TOKEN` secret** — the workflow mints an OIDC JWT
+that npm validates against per-package trusted-publisher records. The
+publish flow is entirely **tag-driven**.
+
+Every release is one PR, one squash-commit on main, one signed tag,
+one workflow run, multiple `npm publish` calls (one per package, all
+from the same workflow execution).
 
 ## The end-to-end flow
 
 ```
 1. Branch off main
-2. Bump packages/<name>/package.json + add CHANGELOG entry IN the PR
-3. PR title: chore(release): <package>/vX.Y.Z — <short summary>
-4. Squash-merge to main
-5. Sign-tag the merged release commit:
-       git tag -s <package>/vX.Y.Z -m "..."
-6. Push the tag:  git push origin <package>/vX.Y.Z
-7. Watch the Release workflow; verify npm shows the new version
+2. Bump every packages/*/package.json to the new version
+3. Update every packages/*/CHANGELOG.md with the new entry
+4. PR title: chore(release): vX.Y.Z — <short summary>
+5. Squash-merge to main
+6. Sign-tag the merged release commit:
+       git tag -s vX.Y.Z -m "..."
+7. Push the tag:  git push origin vX.Y.Z
+8. Watch the Release workflow; verify npm shows the new version on
+   every package
 ```
 
-The tag prefix selects the package. **Nothing else triggers a
-publish** — not merging, not pushing main, not editing
-`packages/<name>/package.json`. If the tag isn't pushed, the version
-sits in main but is invisible on npm.
-
-Examples of valid tags:
-- `gas-oracle/v0.3.0`
-- `chain-source/v0.1.0`
-- `tx-tracker/v0.1.0`
-
-The workflow rejects tags that don't match `<package>/v<semver>` and
-also rejects tags whose `<package>` doesn't have a corresponding
-`packages/<package>/` directory.
+The tag is the publish trigger. Nothing else triggers a publish — not
+merging the PR, not pushing main, not editing any `package.json`. If
+the tag isn't pushed, the version sits in main but is invisible on npm.
 
 ## Step-by-step
 
-### 1. Bundle the version bump into the change PR
+### 1. Bump every package in lockstep
+
+Synced versioning: **every publishable workspace package must be at
+the same version**. The release workflow refuses to publish if any
+package's version doesn't match the tag.
 
 ```bash
-# In the same branch as your changes:
-# - Edit packages/<name>/package.json: "version": "X.Y.Z"
-# - Edit packages/<name>/CHANGELOG.md: prepend a new section
-git add packages/<name>/package.json packages/<name>/CHANGELOG.md
-git commit -m "chore(release): <name>/vX.Y.Z"
-git push
+# In your release branch — bump all three:
+sed -i.bak 's/"version": "0\.X\.Y"/"version": "0.X.Z"/' \
+  packages/chain-source/package.json \
+  packages/gas-oracle/package.json \
+  packages/tx-tracker/package.json
+rm packages/*/package.json.bak
+
+# Verify:
+for pkg in packages/*/; do
+  echo "$pkg → $(node -p "require('./$pkg/package.json').version")"
+done
 ```
 
-CHANGELOG entry goes at the **top** (after the file header), in
-Keep-a-Changelog format. Sections are `### Added`, `### Changed`,
-`### Fixed`, `### Removed`, `### Notes`. Use absolute dates
-(`2026-05-03`), never relative.
+### 2. Update per-package CHANGELOGs
 
-### 2. PR title — the exact format matters
+Each package has its own `CHANGELOG.md` that ships in its npm tarball
+(in the `files` allowlist). Add the new release entry at the top of
+each, following the existing Keep-a-Changelog format. **Sections are
+`### Added`, `### Changed`, `### Fixed`, `### Removed`, `### Notes`.**
+Use absolute dates (`2026-05-04`), never relative.
+
+If a package has no changes for a release, still add a stub entry
+noting the synchronized release:
+
+```markdown
+## [0.3.1] — 2026-05-10
+
+### Notes
+- Synchronized release — no changes to this package. Bumped in
+  lockstep with the rest of the toolkit.
+```
+
+This keeps consumers' `npm view @valve-tech/<name> versions` honest.
+
+### 3. PR title — exact format
 
 ```
-chore(release): gas-oracle/v0.3.0 — ChainSource layering + tx-tracker spec
-chore(release): chain-source/v0.1.0 — initial implementation
-chore(release): tx-tracker/v0.1.0 — initial implementation
+chore(release): v0.3.0 — short summary
+chore(release): v0.3.1 — fix idle-traffic bug in chain-source
+chore(release): v0.4.0 — chain-source implementation lands
 ```
 
 The squash-merge subject takes the PR title verbatim, producing a
-clean per-package release log on main. **Do not** use `feat:`,
-`fix:`, etc. for release PRs — those types are for in-PR commits
-within the branch, not the squash-merge subject.
+clean release log on main:
 
-To retitle a PR after opening it:
-
-```bash
-gh pr edit <PR#> --title "chore(release): <name>/vX.Y.Z — short summary"
+```
+b63264f chore(release): v0.3.0 — synchronized release; idle-traffic controls (#9)
 ```
 
-### 3. Squash-merge
+**Do not** use `feat:`, `fix:`, etc. for release PRs — those types
+are for in-PR commits within the branch, not the squash-merge subject.
+The release commit is always `chore(release): vX.Y.Z — <summary>`.
+
+To retitle a PR after opening:
+
+```bash
+gh pr edit <PR#> --title "chore(release): vX.Y.Z — short summary"
+```
+
+### 4. Squash-merge
 
 ```bash
 gh pr merge <PR#> --squash --auto --delete-branch
 ```
 
-`--auto` queues the merge until CI passes. `--delete-branch` cleans
-up the feature branch on origin.
-
-After merge, sync local:
+`--auto` queues the merge until CI passes. After merge, sync local:
 
 ```bash
 git checkout main && git pull --ff-only
 ```
 
-### 4. Sign and push the per-package tag
+### 5. Sign and push the synchronized tag
 
-Tags are GPG-style signed in this repo (existing tags use the
-maintainer's SSH key via 1Password). If the 1Password SSH agent is
-locked, tag creation fails with `failed to fill whole buffer` — see
-Failure modes below.
+Tags are SSH-signed in this repo (the `valvecitydev` 1Password key).
+If the 1Password SSH agent is locked, tag creation fails with
+`failed to fill whole buffer` — see Failure modes below.
 
 ```bash
-git tag -s <package>/vX.Y.Z -m "<package>/vX.Y.Z — short summary"
-git push origin <package>/vX.Y.Z
+git tag -s vX.Y.Z -m "vX.Y.Z — short summary"
+git push origin vX.Y.Z
 ```
 
 The tag points at the squash-merge commit on main.
 
-### 5. Verify the publish
+### 6. Verify the publish
 
 ```bash
-gh run watch $(gh run list --workflow=release.yml --limit 1 --json databaseId --jq '.[0].databaseId') --exit-status
+gh run watch $(gh run list --workflow=release.yml --limit 1 \
+  --json databaseId --jq '.[0].databaseId') --exit-status
 ```
 
-Blocks until the workflow finishes; non-zero exit = publish failed.
-After success:
+Blocks until the workflow finishes; non-zero exit = at least one
+publish failed. After success:
 
 ```bash
-npm view @valve-tech/<name>@latest version          # the new version
-npm view @valve-tech/<name>@latest --json | jq .dist.attestations
+for pkg in chain-source gas-oracle tx-tracker; do
+  echo -n "@valve-tech/$pkg "
+  npm view "@valve-tech/$pkg@latest" version
+done
 ```
+
+All three should show the new version.
 
 ## Adding a NEW package to the monorepo (first publish)
 
-When a brand-new package lands (chain-source@0.0.1 and tx-tracker@0.0.1
-were the first two), you cannot publish via the workflow until the
+When a brand-new package lands (chain-source@0.3.0 and
+tx-tracker@0.3.0 were the first two, jumping straight to the synced
+0.3.0 line), you cannot publish via the workflow until the
 trusted-publisher record exists at npm. The record requires the
 package to already exist on npm. Chicken-and-egg. Solution: **manual
 first publish from a maintainer's machine**, then configure the
@@ -133,30 +162,31 @@ trusted publisher, then subsequent publishes go through the workflow.
 ### One-time first-publish dance
 
 ```bash
-# 1. Make sure the package builds locally and the dist/ is fresh.
+# 1. Make sure the package builds locally and dist/ is fresh.
 yarn workspace @valve-tech/<name> build
 
 # 2. Sanity-check the tarball contents BEFORE publishing.
 cd packages/<name>
 npm pack --dry-run
 # Verify only the files in package.json#files are listed:
-# dist/, README.md, LICENSE — and for gas-oracle, also AGENTS.md,
-# CHANGELOG.md, skills/.
+# dist/, README.md, LICENSE, CHANGELOG.md (and AGENTS.md / skills/
+# for gas-oracle).
 
-# 3. Publish. --access public is required for scoped packages on
-#    first publish.
+# 3. Make sure you're logged into npm as a maintainer with rights to
+# the @valve-tech scope. The npm credential is separate from the
+# OIDC publish in CI.
+npm whoami            # should print your username
+npm access list packages @valve-tech | head    # should show existing pkgs
+
+# 4. Publish. --access public is required for scoped packages on
+# first publish.
 npm publish --access public
+
+cd ../..
 ```
 
-### Configure the trusted publisher (one-time per package)
-
-After the manual first publish lands, go to:
-
-```
-https://www.npmjs.com/settings/valve-tech/publishing
-```
-
-Click **"Add trusted publisher"** and enter:
+After the manual first publish lands, configure the trusted publisher
+at https://www.npmjs.com/settings/valve-tech/publishing:
 
 | Field | Value |
 | --- | --- |
@@ -165,53 +195,40 @@ Click **"Add trusted publisher"** and enter:
 | Repository owner | `valve-tech` |
 | Repository name | `evm-toolkit` |
 | Workflow filename | `release.yml` |
-| Environment | (leave blank — see CHANGELOG v0.2.3 for why) |
+| Environment | *(blank — see CHANGELOG v0.2.3 for why)* |
 
-Save. The record is now active. **All subsequent publishes for that
-package go through the workflow** — push a `<package>/vX.Y.Z` tag
-and the OIDC publish runs automatically.
+Save. Subsequent publishes for that package go through the workflow.
 
 ### Repeat per package
 
 Each package needs its own trusted-publisher record. They all point
 at the same repo + the same workflow file — npm matches per-package.
 
-## When the gas-oracle package's trusted publisher needs updating
+## Version-bump rules (SemVer, applied uniformly across all packages)
 
-The renamed repo (`gas-oracle` → `evm-toolkit`) **does not** require
-the existing `@valve-tech/gas-oracle` trusted-publisher record to be
-torn down and recreated. GitHub auto-redirects the old repo URL to
-the new one, but **npm caches the repo identity by GitHub repo ID**,
-not by the URL string, so the existing trusted-publisher record
-continues to match.
+Because versioning is synced, **all three packages bump together** —
+even if a release only meaningfully changes one of them. The bump
+size is determined by the largest change across the toolkit:
 
-What DOES need updating: the **publishing flow itself**. The package
-lives at `packages/gas-oracle/` now and the tag pattern is
-`gas-oracle/vX.Y.Z`. The next gas-oracle release uses the new
-pattern; old `v*` tags are historical-only.
-
-To verify the existing record still works, **trigger a manual
-workflow_dispatch** with the `tag` input set to a freshly-tagged
-version (e.g. `gas-oracle/v0.3.0`). If the OIDC publish succeeds,
-the record migrated cleanly. If it fails with "tenant not found" /
-"401 Unauthorized", the npm side did not auto-track the GitHub
-rename — recreate the record per the table above.
-
-## Version-bump rules (SemVer)
-
-- **Patch** (`0.2.4 → 0.2.5`): bug fixes, internal refactors, docs
-  that ship in the tarball, new examples, new shipped skills.
-- **Minor** (`0.2.5 → 0.3.0`): new exports, new options on existing
-  exports that have a working default, new sub-export paths. Anything
-  consumers can adopt without changing existing call sites.
+- **Patch** (`0.3.0 → 0.3.1`): bug fixes in any package, internal
+  refactors, docs that ship in any tarball, new examples.
+- **Minor** (`0.3.0 → 0.4.0`): new exports in any package, new
+  options on existing exports that have a working default, new
+  sub-export paths. Anything consumers can adopt without changing
+  existing call sites.
 - **Major** (`0.x.y → 1.0.0` or `1.x.y → 2.0.0`): renamed exports,
   removed options, changed default values that change behavior,
-  changed type shapes that aren't pure additions.
+  changed type shapes that aren't pure additions, in any package.
 
-Each package versions independently. A change to gas-oracle does not
-bump tx-tracker, and vice versa.
+Packages without changes for a release still bump (synced) and get a
+short CHANGELOG entry noting "Synchronized release — no changes to
+this package."
 
-## When NOT to bump any package
+The toolkit is at `0.3.x` — pre-1.0 SemVer applies, but the project
+practices it strictly anyway. Treat a public-API rename as breaking
+even in 0.x.
+
+## When NOT to release
 
 A change that does not touch any path in any package's `files`
 allowlist (`dist`, `skills`, `README.md`, `AGENTS.md`, `CHANGELOG.md`,
@@ -225,13 +242,8 @@ Examples:
 - Root `package.json` (private — never published)
 - `examples/` at root (cross-package, not in any package's files allowlist)
 
-A `packages/<name>/examples/` edit is also not in `files` for that
-package — does not need a release on its own. But if you also edit the
-package's `README.md` to reference the new example, the README ships
-and that triggers a release.
-
-When in doubt: `cat packages/<name>/package.json | jq .files` and check
-whether your change's path is included.
+If you only edit those, no version bump. The CI workflow runs and
+verifies the change but doesn't publish.
 
 ## Failure modes
 
@@ -240,47 +252,64 @@ whether your change's path is included.
 The 1Password SSH agent is locked. The user must unlock 1Password
 (Touch ID or 1Password app unlock) before tag signing can complete.
 **Don't bypass with `--no-gpg-sign`** — every tag in this repo's
-history is signed and the chain of provenance breaks if one suddenly
-isn't.
+history is signed and the chain of provenance breaks if one isn't.
 
 ### Workflow fails with "401 Unauthorized" or "tenant not found"
 
-OIDC trusted-publisher record on npm is misconfigured or out of sync.
+OIDC trusted-publisher record on npm is misconfigured for one or more
+packages.
 
 1. Check `https://www.npmjs.com/settings/valve-tech/publishing` —
-   record for the affected package matches:
+   verify each of the three packages has a record matching:
    - Repository: `valve-tech/evm-toolkit`
    - Workflow filename: `release.yml`
    - Environment: blank
-2. If wrong: delete and recreate the record.
+2. If any is wrong: delete and recreate the record per the table
+   above.
 3. The workflow file (`.github/workflows/release.yml`) deliberately
    has **no** `environment:` block — adding one breaks OIDC matching.
-   See CHANGELOG v0.2.3 notes.
 
-### Workflow fails at "Verify package version matches tag" step
+### Workflow fails at "Verify all packages are at tag version"
 
-The `package.json` `version` field doesn't match the tag's version.
-Either:
-- You forgot to bump (most common). Recovery: open a new release PR
-  bumping again, merge, retag with the next version. Do **not**
-  delete the existing tag.
-- The tag is correct but the wrong commit was tagged. Recovery: same
-  — bump again, retag.
+One of the `package.json` `version` fields doesn't match the tag's
+version. Recovery:
 
-Mark broken intermediate versions as `*unpublished*` in the
-CHANGELOG (see `packages/gas-oracle/CHANGELOG.md`'s v0.2.2 entry for
-the existing precedent).
+1. Open a new release PR bumping every package to the next version.
+2. Merge, retag with the new version, push.
+3. Mark the broken intermediate version as `*unpublished*` in the
+   per-package CHANGELOGs (see `packages/gas-oracle/CHANGELOG.md`'s
+   v0.2.2 entry for the existing precedent).
+
+Do **not** delete the existing tag.
+
+### Partial publish — some packages succeed, others fail
+
+Possible causes: per-package npm permission issues, npm registry
+flake, trusted-publisher record drift. The workflow stops on the
+first failure; subsequent publishes won't fire.
+
+Recovery:
+1. **Don't try to republish the same version.** npm rejects it. The
+   packages that succeeded are now at `vX.Y.Z` on npm.
+2. Diagnose the failure (typically npm permissions or trusted
+   publisher).
+3. Bump every package to `vX.Y.Z+1` in a follow-up release PR.
+4. Mark the partially-published version as `*partially published, see
+   v0.X.Y+1*` in the affected CHANGELOGs.
+
+For the very rare case where a partial publish needs to be fixed
+without a version bump: `npm unpublish` is allowed within 72 hours of
+publish for newly-introduced versions. Use only when truly necessary;
+unpublishing is generally discouraged.
 
 ### Tag pushed but no workflow ran
 
 Possible causes:
 
-1. Tag pattern doesn't match `<package>/v*` — e.g., you typed
-   `gas-oracle/0.3.0` (no `v`) or `v0.3.0` (no package prefix).
-   Delete and retag with the right name.
-2. `<package>` directory doesn't exist — the workflow fails the
-   parse step with a non-zero exit. Check `gh run list --workflow=release.yml`.
-3. Workflow is disabled — check `gh workflow list`.
+1. Tag pattern doesn't match `v*` — e.g., you typed `0.3.0` (no `v`)
+   or `gas-oracle/v0.3.0` (legacy per-package format, no longer
+   supported). Delete and retag with `vX.Y.Z`.
+2. Workflow is disabled — check `gh workflow list`.
 
 ### Publish succeeded but consumer can't see new version
 
@@ -294,30 +323,14 @@ npm view @valve-tech/<name> versions --json | jq -r '.[-3:]'
 If the version is in npm's view but a consumer's lockfile pins to an
 older one, that's a consumer-side issue (`yarn up`, `npm update`).
 
-## Stale-branch hygiene after release
-
-After the release PR is merged with `--delete-branch`, the feature
-branch is gone from origin but other release branches from prior
-versions may linger. Periodically prune:
-
-```bash
-git fetch --prune
-gh pr list --state merged --limit 20
-git push origin --delete <branch> [<branch> ...]
-```
-
-Don't bulk-delete without listing first — branches that look stale
-may have been left for forensic reasons (e.g. an `*unpublished*`
-release where the branch is the only on-disk evidence of what failed).
-
 ## What the Release workflow actually does
 
 For full reference, `.github/workflows/release.yml` does, in order:
 
 1. `actions/checkout@v4` — pulls the tagged commit (or the input ref
    for `workflow_dispatch`).
-2. **Parse the tag** into `package` + `version` via a strict regex.
-   Fails fast on malformed tags.
+2. **Parse the tag** into `version` via a strict regex. Fails fast
+   on malformed tags.
 3. `setup-node@v4` with `registry-url: 'https://registry.npmjs.org'`
    (required for OIDC negotiation).
 4. Upgrades npm to 11.5.1+ (Node 22's default npm 10 has matcher
@@ -325,15 +338,15 @@ For full reference, `.github/workflows/release.yml` does, in order:
 5. `corepack enable && yarn install --immutable` — frozen lockfile.
 6. **Workspace-wide gate**: `yarn lint && yarn typecheck &&
    yarn typecheck:examples && yarn test && yarn build` — every
-   package must be clean for any one of them to publish.
-7. **Verify package version matches tag**: `node -p "require(...).version"`
-   against the parsed version. Catches "I forgot to bump" before
-   npm rejects.
-8. `cd packages/<package> && npm publish --access public --provenance`
-   — `--provenance` attaches the SLSA attestation; `--access public`
-   is required for scoped packages on first publish.
+   package must be clean for any publish to fire.
+7. **Verify all packages are at tag version**: walks `packages/*/`
+   and confirms every `package.json#version` matches.
+8. Publishes packages in topological order:
+   `chain-source` → `gas-oracle` → `tx-tracker`. Each runs
+   `npm publish --access public --provenance` — `--provenance`
+   attaches the SLSA attestation; `--access public` is required for
+   scoped packages.
 
-If any step before publish fails, the publish does not run. The
-version sits at the tagged ref in git but isn't on npm — recover by
-fixing the issue and **bumping again** (do not retry the same
-version).
+If any step before publish fails, no publishes run. If a publish step
+fails, subsequent publish steps don't run — recover per the partial-
+publish guidance above.

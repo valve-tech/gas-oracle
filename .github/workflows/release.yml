@@ -1,42 +1,39 @@
 name: Release
 
-# Publishes one workspace package to npm using Trusted Publishers
-# (OIDC). No NPM_TOKEN secret required — npm verifies the GitHub OIDC
-# claim (repo + workflow path + environment) against a per-package
-# trusted-publisher config maintained at
+# Publishes ALL workspace packages to npm in lockstep using Trusted
+# Publishers (OIDC). Versioning is synchronized — every published
+# release is a single `vX.Y.Z` tag that bumps every package in
+# `packages/*` to the same version, and this workflow publishes them
+# all from the same tag.
+#
+# No NPM_TOKEN secret required — npm verifies the GitHub OIDC claim
+# (repo + workflow path + environment) against per-package
+# trusted-publisher records maintained at
 # https://npmjs.com/settings/valve-tech/publishing.
 #
-# Trigger: push a tag matching `<package>/v*` —
-#   gas-oracle/v0.3.0   → publishes packages/gas-oracle
-#   chain-source/v0.1.0 → publishes packages/chain-source
-#   tx-tracker/v0.1.0   → publishes packages/tx-tracker
-#
-# Manual dispatch is also enabled for one-off republishes (e.g.
-# recovering from a tag typo) — provide the same `<package>/v<version>`
-# value as the input, no leading refs/tags/.
+# Trigger: push a tag matching `v*` (e.g. `v0.3.0`). Manual dispatch
+# is also enabled for one-off republishes — provide the same `vX.Y.Z`
+# value as the input.
 #
 # First-publish note: each new package's first publish must be done
 # manually from a maintainer's machine (`npm publish --access public`)
-# to claim the npm name. The trusted-publisher record can then be
-# configured at npmjs.com, and subsequent publishes go through this
-# workflow. See `.claude/skills/releasing-evm-toolkit/SKILL.md` for
-# the full first-publish dance.
+# to claim the npm name and configure the trusted-publisher record.
+# After that, this workflow handles every subsequent release. See
+# `.claude/skills/releasing-evm-toolkit/SKILL.md`.
 #
-# Security note: this workflow consumes the tag name from
-# `github.ref_name` only via an environment variable, never
-# interpolated into a `run:` shell directly. Tag names can contain
-# arbitrary text, so the env-var indirection is the safe form.
+# Security note: the tag name from `github.ref_name` is consumed only
+# via an environment variable, never interpolated into a `run:` shell
+# directly. Tag names can contain arbitrary text, so the env-var
+# indirection is the safe form.
 
 on:
   push:
     tags:
-      - 'gas-oracle/v*'
-      - 'chain-source/v*'
-      - 'tx-tracker/v*'
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to publish (e.g. "gas-oracle/v0.3.0"). Must already exist in the repo.'
+        description: 'Tag to publish (e.g. "v0.3.0"). Must already exist in the repo.'
         required: true
         type: string
 
@@ -52,22 +49,18 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
-      - name: Parse tag into package + version
+      - name: Parse tag version
         id: parse
         env:
           TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
-          if [[ ! "$TAG_NAME" =~ ^([a-z][a-z0-9-]*)/v([0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9.-]+)?)$ ]]; then
-            echo "Tag '$TAG_NAME' does not match expected '<package>/v<version>' format" >&2
+          # Tag format: v<semver>. Reject anything else so malformed
+          # tags fail fast.
+          if [[ ! "$TAG_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9.-]+)?)$ ]]; then
+            echo "Tag '$TAG_NAME' does not match expected 'v<version>' format" >&2
             exit 1
           fi
-          package="${BASH_REMATCH[1]}"
-          version="${BASH_REMATCH[2]}"
-          if [[ ! -d "packages/$package" ]]; then
-            echo "No packages/$package/ directory in repo" >&2
-            exit 1
-          fi
-          echo "package=$package" >> "$GITHUB_OUTPUT"
+          version="${BASH_REMATCH[1]}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@v4
@@ -98,20 +91,40 @@ jobs:
       - name: Build
         run: yarn build
 
-      - name: Verify package version matches tag
+      - name: Verify all packages are at tag version
         env:
-          PACKAGE: ${{ steps.parse.outputs.package }}
           VERSION: ${{ steps.parse.outputs.version }}
         run: |
-          pkg_version="$(node -p "require('./packages/$PACKAGE/package.json').version")"
-          if [[ "$pkg_version" != "$VERSION" ]]; then
-            echo "packages/$PACKAGE/package.json version is '$pkg_version' but tag is 'v$VERSION'" >&2
-            exit 1
-          fi
+          # Synced versioning — every publishable workspace package
+          # must match the tag's version exactly. Catches "I forgot
+          # to bump one" before any partial publish.
+          for pkg in packages/*/; do
+            name="$(basename "$pkg")"
+            pkg_version="$(node -p "require('./$pkg/package.json').version")"
+            if [[ "$pkg_version" != "$VERSION" ]]; then
+              echo "$pkg/package.json version is '$pkg_version' but tag is 'v$VERSION'" >&2
+              exit 1
+            fi
+            echo "✓ $name@$pkg_version"
+          done
 
-      - name: Publish to npm
-        env:
-          PACKAGE: ${{ steps.parse.outputs.package }}
-        run: |
-          cd "packages/$PACKAGE"
-          npm publish --access public --provenance
+      # Publish in topological order (chain-source first since the
+      # others may depend on it in future versions). Each publish is
+      # gated on workspace-wide lint/typecheck/test/build above, so a
+      # broken package in any workspace blocks the entire release.
+      #
+      # Partial-failure recovery: if any individual `npm publish`
+      # fails, the workflow stops with a non-zero exit. Published
+      # packages stay published; unpublished ones can be retried by
+      # bumping the version (`vX.Y.Z+1`) — npm rejects re-publishing
+      # the same version. Mark the failed intermediate version as
+      # `*unpublished*` in the per-package CHANGELOG.
+
+      - name: Publish @valve-tech/chain-source
+        run: cd packages/chain-source && npm publish --access public --provenance
+
+      - name: Publish @valve-tech/gas-oracle
+        run: cd packages/gas-oracle && npm publish --access public --provenance
+
+      - name: Publish @valve-tech/tx-tracker
+        run: cd packages/tx-tracker && npm publish --access public --provenance
