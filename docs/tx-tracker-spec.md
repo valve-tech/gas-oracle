@@ -103,7 +103,7 @@ the observation is:
 type EventSource =
   | 'subscription'      // newHeads / newPendingTransactions push
   | 'block-poll'        // eth_getBlockByNumber polled at the oracle tick
-  | 'mempool-snapshot'  // txpool_content polled at the oracle tick
+  | 'mempool-snapshot'  // txpool_content polled on the source's tick
   | 'receipt-poll'      // eth_getTransactionReceipt fallback
 ```
 
@@ -157,86 +157,212 @@ documents this so durable-store implementations get it right.
 
 ---
 
-## 3. Package layout
+## 3. Architecture and package layout
 
-The tracker is a **sub-export** of the existing package:
+### 3.1 Layering — `ChainSource` is the shared primitive
 
-```ts
-import {
-  createTxTracker,
-  createInMemoryStore,
-  type TxTracker,
-  type TxEvent,
-  type TxStatus,
-  type Capabilities,
-  type TxTrackerStore,
-  type TxSubscription,
-} from '@valve-tech/gas-oracle/tx-tracker'
+The clean layering for v0.3.0 is **three layers**, each consuming
+only the layer below:
+
+```
+                ┌─────────────────────────────────────┐
+                │   PublicClient (viem)               │  ← caller-provided
+                └──────────────┬──────────────────────┘
+                               │
+                ┌──────────────▼──────────────────────┐
+                │   ChainSource                       │
+                │   • capability probe                │
+                │   • subscribeBlocks(cb)             │
+                │   • subscribeMempool(cb)            │
+                │   • getBlock / getReceipt /         │
+                │     getTransaction / getFeeHistory  │
+                │   • one upstream poll cycle         │
+                └──────┬───────────────────────┬──────┘
+                       │                       │
+                ┌──────▼──────┐         ┌──────▼──────┐
+                │  GasOracle  │         │  TxTracker  │
+                │  (tier      │         │  (per-tx    │
+                │   reducer)  │         │   state     │
+                │             │         │   machine)  │
+                └─────────────┘         └─────────────┘
+                       (siblings — neither depends on the other)
 ```
 
-**Why a sub-export, not a separate npm package:**
+`GasOracle` and `TxTracker` are **siblings**, both consume the same
+`ChainSource` interface, neither depends on the other. A consumer who
+wants both gets one `ChainSource` shared between them (one upstream
+RPC stream, two derived views). A consumer who wants only the tracker
+constructs a `ChainSource` and a tracker — no oracle in sight, and
+vice versa.
 
-1. **Free RPC reuse.** When given an existing `GasOracle`, the tracker
-   piggybacks on its poll cycle — `eth_getBlockByNumber` is already
-   fetched every tick, and `txpool_content` is already cached if
-   `keepMempoolSnapshot: true`. The tracker subscribes to the oracle
-   and checks tracked hashes against the data the oracle already has
-   in hand. Zero additional RPCs for the steady-state inclusion-watch
-   path.
-2. **Reorg detection piggybacks on `state.ring`.** The oracle already
-   has `BlockSample[]` with `parentHash` linkage — the tracker walks
-   that chain rather than requesting blocks itself.
-3. **Type sharing.** `TipSample`, `NormalizedMempool`, `BlockResult`,
-   `RawTx` are all already in this package. A separate package would
-   either duplicate them or import-and-re-export them with a fragile
-   versioning coupling.
-4. **Consistent with existing pattern.** `viem-actions` and
-   `viem-transport` are already separate import paths
-   (`package.json`'s `exports`). The tracker is a parallel sibling.
-5. **Tree-shaking is already configured.** Callers who only want gas
-   tiers don't bundle tracker code (they don't import the path).
+This matters because:
 
-The base `index.ts`, `oracle.ts`, and primitive-layer files
-(`mempool.ts`, `block-position.ts`, `math.ts`, `samples.ts`) **do not
-change**. The "primitive layer is pure functions over snapshots"
-invariant is preserved: the tracker is a new stateful surface that
-opts in via the import path, not a stateful retrofit on existing files.
+1. **Neither feature is more fundamental than the other.** Gas tiers
+   are a derived computation on top of chain observation; tx tracking
+   is also a derived view on top of chain observation. The underlying
+   primitive — observing the chain — is the thing both depend on, and
+   that's `ChainSource`. The earlier draft of this spec used a
+   "tracker piggybacks on oracle" framing; that was wrong. The oracle
+   is not the canonical chain-watch primitive, and forcing tracker
+   users to instantiate an unused `GasOracle` to "share its poll cycle"
+   is a code smell.
+2. **One upstream RPC cycle, multiple consumers.** `ChainSource`
+   owns the poll loop and the capability probe. Both oracle and
+   tracker subscribe; the source fans the same block / mempool data
+   out to each. No double-polling, no asymmetric coupling.
+3. **Independent lifecycles.** A consumer can construct `ChainSource`
+   and `TxTracker` without `GasOracle`, run only the tracker for a
+   while, then `createGasOracle({ source })` and start it later — the
+   source is happily shared. Stopping one consumer does not stop the
+   other or the source.
+4. **Testing surface.** A fixture-driven test injects a stub
+   `ChainSource` and asserts on either consumer's behavior in
+   isolation. No need to mock a full `GasOracle` to test the tracker.
 
-### 3.1 New files
+### 3.2 `ChainSource` interface
+
+```ts
+interface ChainSource {
+  /** Push-based new-block stream when capability allows; falls back
+   *  to interval-poll. Subscribers get a normalized `BlockResult`. */
+  subscribeBlocks(cb: (block: BlockResult) => void): Unsubscribe
+
+  /** Push-based mempool delta when capability allows; falls back to
+   *  snapshot-diff every cycle. Subscribers get the latest
+   *  `NormalizedMempool` snapshot. */
+  subscribeMempool(cb: (snapshot: NormalizedMempool) => void): Unsubscribe
+
+  /** On-demand single-block fetch. */
+  getBlock(blockTag: 'latest' | bigint): Promise<BlockResult | null>
+
+  /** On-demand fee history (powers the oracle's trend detection). */
+  getFeeHistory(blockCount: number, percentiles: number[]): Promise<FeeHistoryResult | null>
+
+  /** On-demand mempool snapshot. */
+  getMempoolSnapshot(): Promise<NormalizedMempool | null>
+
+  /** On-demand receipt. */
+  getReceipt(hash: Hash): Promise<TransactionReceipt | null>
+
+  /** On-demand tx lookup (powers the tracker's replacement detection). */
+  getTransaction(hash: Hash): Promise<RawTx | null>
+
+  /** Stable capability snapshot (§7). */
+  capabilities(): Capabilities
+
+  /** Lifecycle. start() begins the poll loop and / or opens
+   *  subscriptions. stop() tears down both. Idempotent. */
+  start(): void
+  stop(): void
+}
+
+interface CreateChainSourceOptions {
+  /** viem PublicClient pointed at the upstream RPC. */
+  client: PublicClient
+  /** Polling interval in ms when push subscriptions aren't available
+   *  (or aren't preferred). Default 10_000. */
+  pollIntervalMs?: number
+  /** Producer-side toggles — same role as the existing oracle's
+   *  `poll` option. Disabling `mempool` here disables it for every
+   *  consumer of this source. */
+  poll?: PollOptions
+  /** Optional error sink — called per-method when an RPC fails. */
+  onError?: (method: string, err: unknown) => void
+}
+
+function createChainSource(options: CreateChainSourceOptions): ChainSource
+```
+
+`ChainSource` is the canonical chain-observation primitive. Multiple
+subscribers per stream are first-class — that's the whole point.
+
+### 3.3 Migration of `createGasOracle`
+
+`createGasOracle` is updated to consume a `ChainSource`. The signature
+gains a `source` field; the existing `client` field is preserved as a
+backward-compat shorthand that internally creates a private source.
+
+```ts
+interface CreateGasOracleOptions {
+  // NEW (preferred for v0.3.0+):
+  source?: ChainSource
+
+  // EXISTING (still supported — creates a private ChainSource internally):
+  client?: PublicClient
+  pollIntervalMs?: number
+  poll?: PollOptions
+  onError?: (method: string, err: unknown) => void
+
+  // Unchanged:
+  chainId: number
+  priorityFeeDecayCap?: bigint | null
+  priorityModel?: PriorityModel
+  baseFeeLivenessBlocks?: number
+  keepMempoolSnapshot?: boolean
+}
+```
+
+Validation: exactly one of `source` / `client` must be provided. A
+consumer who passes `client` gets the v0.2.x behavior, byte-for-byte
+identical. A consumer who passes `source` opts in to the new layering
+and can share the source with a tracker.
+
+This is a **soft** breaking change — existing call sites work
+unchanged. A future major may remove the `client` shorthand once the
+ecosystem has migrated.
+
+### 3.4 New files
 
 ```
 src/
+├── chain-source/
+│   ├── index.ts            Re-exports.
+│   ├── source.ts           createChainSource factory.
+│   ├── capabilities.ts     probeCapabilities(client) — used by source
+│   │                       at startup and on transport reconnect.
+│   ├── poll-loop.ts        Pure tick logic (block + mempool + feeHistory
+│   │                       fan-out). Reuses fetchOracleInputs internals.
+│   ├── subscriptions.ts    The shared pub/sub primitive (§5.1).
+│   └── *.test.ts
 ├── tx-tracker/
 │   ├── index.ts            Re-exports — public surface only.
-│   ├── tracker.ts          createTxTracker factory + state machine.
-│   ├── events.ts           TxEvent discriminated-union types and
-│   │                       payload builders.
-│   ├── capabilities.ts     probeCapabilities(client) — one-shot probe
-│   │                       at startup; re-probe hook for reconnects.
+│   ├── tracker.ts          createTxTracker factory + per-tx state machine.
+│   ├── events.ts           TxEvent discriminated-union + payload builders.
 │   ├── store.ts            TxTrackerStore interface + createInMemoryStore.
-│   ├── reorg.ts            Reorg detector (pure function over BlockSample[]).
+│   ├── reorg.ts            Reorg detector (pure function over block ring).
 │   ├── selectors.ts        Bulk-subscription matchers (by-from, by-to,
-│   │                       by-topic, predicate).
-│   ├── subscriptions.ts    The pub/sub primitive (see §5.1).
-│   └── *.test.ts           Vitest specs colocated as elsewhere.
-└── (existing files unchanged)
-
-examples/
-└── 07-tx-tracker.ts        Runnable end-to-end example.
-
-docs/
-└── tx-tracker-spec.md      This file.
+│   │                       predicate).
+│   └── *.test.ts
+└── (existing files: oracle.ts updated to consume ChainSource;
+   primitive-layer files unchanged)
 ```
 
-### 3.2 `package.json` changes
+### 3.5 Sub-exports
+
+```ts
+// Existing:
+import { createGasOracle } from '@valve-tech/gas-oracle'
+
+// NEW in v0.3.0:
+import { createChainSource } from '@valve-tech/gas-oracle/chain-source'
+import { createTxTracker, createInMemoryStore }
+  from '@valve-tech/gas-oracle/tx-tracker'
+```
+
+Two new sub-export paths. The base entry `@valve-tech/gas-oracle`
+keeps its existing surface (and gets the `source?` field on
+`CreateGasOracleOptions` as additive).
+
+### 3.6 `package.json` changes
 
 ```jsonc
 {
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
-    "./viem-actions":   { "types": "./dist/viem-actions.d.ts",   "import": "./dist/viem-actions.js" },
-    "./viem-transport": { "types": "./dist/viem-transport.d.ts", "import": "./dist/viem-transport.js" },
-    "./tx-tracker":     { "types": "./dist/tx-tracker/index.d.ts", "import": "./dist/tx-tracker/index.js" }
+    ".":                { "types": "./dist/index.d.ts",                "import": "./dist/index.js" },
+    "./viem-actions":   { "types": "./dist/viem-actions.d.ts",         "import": "./dist/viem-actions.js" },
+    "./viem-transport": { "types": "./dist/viem-transport.d.ts",       "import": "./dist/viem-transport.js" },
+    "./chain-source":   { "types": "./dist/chain-source/index.d.ts",   "import": "./dist/chain-source/index.js" },
+    "./tx-tracker":     { "types": "./dist/tx-tracker/index.d.ts",     "import": "./dist/tx-tracker/index.js" }
   }
 }
 ```
@@ -248,17 +374,33 @@ peer dep.
 
 ## 4. Versioning
 
-`0.3.0` — additive, backward-compatible. Existing consumers of
-`createGasOracle`, the viem-actions extension, and the viem-transport
-wrapper see no API changes. The new sub-export is opt-in.
+`0.3.0` — additive, backward-compatible at the call-site level.
+Three things land together:
+
+1. **`createChainSource`** — new sub-export `@valve-tech/gas-oracle/chain-source`.
+2. **`createTxTracker`** — new sub-export `@valve-tech/gas-oracle/tx-tracker`.
+3. **`createGasOracle({ source })`** — additive option on the existing
+   factory, with `createGasOracle({ client })` preserved as the
+   backward-compat shorthand (existing call sites work byte-for-byte
+   unchanged).
+
+The viem-actions and viem-transport sub-exports get an internal
+refactor (they construct a private `ChainSource` instead of calling
+the legacy poll loop directly) but their public surface does not
+change.
+
+A consumer who wants the new layering opts in by constructing their
+own source; a consumer who doesn't keeps the v0.2.x shape and never
+sees the new types.
+
+A breaking change (e.g., removing the `client` shorthand) is reserved
+for a future `0.4.0` major. Under pre-1.0 SemVer strictness, this
+project treats "breaking = bump the second digit." See
+`releasing-gas-oracle/SKILL.md`.
 
 If during implementation the tracker reveals a primitive-layer change
 (e.g., a new field needed on `BlockSample` for reorg detection), that
 change is additive on its types and stays a `0.3.0` minor.
-
-A breaking change is treated as a `0.4.0` major (under pre-1.0 SemVer
-strictness, this project still respects "breaking = bump the second
-digit"). See `releasing-gas-oracle/SKILL.md`.
 
 ---
 
@@ -288,26 +430,17 @@ others). The unsubscribe function is the only teardown path.
 ```ts
 interface CreateTxTrackerOptions {
   /**
-   * The viem PublicClient (or compatible request-shape object) to use
-   * for fallback / direct RPC. Required even when an oracle is
-   * provided — the tracker may issue receipt polls and capability
-   * probes that the oracle's poll cycle doesn't cover.
+   * The chain-source the tracker reads from. Required. The tracker
+   * subscribes to source.subscribeBlocks / subscribeMempool for
+   * push-side events and uses source.getReceipt / getTransaction for
+   * on-demand lookups. The same source MAY also be passed to a
+   * GasOracle — both consume independently, source fans the same
+   * upstream stream out to each.
    */
-  client: PublicClient
+  source: ChainSource
 
   /** EVM chain ID. Echoed back in events. */
   chainId: number
-
-  /**
-   * Optional running GasOracle. When provided, the tracker subscribes
-   * to its poll cycle and reuses block + mempool snapshot data. When
-   * absent, the tracker runs its own minimal poll loop on
-   * `pollIntervalMs` for inclusion-watch.
-   */
-  oracle?: GasOracle
-
-  /** Polling interval in ms when running standalone. Default 10_000. */
-  pollIntervalMs?: number
 
   /**
    * Persistence backend. Default: in-memory store with `retentionBlocks: 64`.
@@ -335,9 +468,10 @@ interface CreateTxTrackerOptions {
   onError?: (method: string, err: unknown) => void
 
   /**
-   * When the tracker starts probing capability and polling. 'eager'
-   * (default) probes on construction; 'lazy' waits for the first
-   * track/getStatus call.
+   * When the tracker starts subscribing to the source. 'eager'
+   * (default) subscribes on construction; 'lazy' waits for the first
+   * track/getStatus call. Capability is read from the source either
+   * way (the source itself owns the probe).
    */
   lifecycle?: 'eager' | 'lazy'
 }
@@ -626,9 +760,11 @@ interface Capabilities {
 
 ### 7.2 How probing works
 
-At construction (or first use under `lazy`), the tracker fires four
-probes, all wrapped in the existing `safeRequest` pattern from
-`src/transport.ts:74` (turn errors into `null`, never throw):
+Capability is owned by `ChainSource`, not by the tracker. At
+`source.start()` (or on first use under a `lazy`-configured source),
+the source fires four probes, all wrapped in the existing
+`safeRequest` pattern from `src/transport.ts:74` (turn errors into
+`null`, never throw):
 
 1. `client.transport.subscribe?.('newHeads')` — if the transport
    supports the subscribe shape, attempt to subscribe and immediately
@@ -641,17 +777,18 @@ probes, all wrapped in the existing `safeRequest` pattern from
    — should return `null` for the zero hash but should not throw. Throw =
    `'unavailable'`.
 
-The result is cached on the tracker. `tracker.capabilities()` returns
-the latest probe result. On WS reconnect (when supported by the
-underlying transport), the tracker re-probes and emits
-`signal-recovered` / `signal-degraded` events on tracked hashes whose
-authority changed.
+`source.capabilities()` returns the latest probe result; the tracker
+calls this and exposes it through `TxEvent.Started.capabilities`.
+On WS reconnect (when supported by the underlying transport), the
+source re-probes and notifies its subscribers; the tracker translates
+notifications into `signal-recovered` / `signal-degraded` events on
+tracked hashes whose authority changed.
 
 ### 7.3 How capability shapes which path runs
 
 | Path | Required capability | Fallback if missing |
 | --- | --- | --- |
-| **Inclusion watch** (tx → block) | `newHeads: 'subscription'` ideal; otherwise `block-poll` via oracle / standalone tick | `receiptByHash` polling per tracked hash on every tick |
+| **Inclusion watch** (tx → block) | `newHeads: 'subscription'` ideal; otherwise `block-poll` via source's tick | `receiptByHash` polling per tracked hash on every tick |
 | **Mempool watch** (tx → mempool) | `newPendingTransactions: 'subscription'` ideal; otherwise `mempool-snapshot` via `txpool_content` | If `txpoolContent: 'gated'`, mempool-watch is **disabled** for this tracker; `seen-in-mempool` events never fire and a `signal-degraded` event with `capabilityLost: 'txpoolContent'` is emitted at startup |
 | **Reorg detection** | `newHeads: 'subscription'` OR `block-poll` — same ring-walk algorithm in either case (§12) | None needed; reorg detection is pure-function on `BlockSample[]` |
 | **Replacement detection** | `eth_getTransactionByHash` to look up the (from, nonce) of the original; then `eth_getTransactionCount` (latest) on the sender to find the canonical-mined nonce | None needed; if both methods are available it works |
@@ -775,12 +912,13 @@ interface InMemoryStoreOptions {
    * retained. After this window passes, the record is GC'd and
    * `Stopped { reason: 'retention-expired' }` fires.
    *
-   * Block-unit (not wall-clock) so behavior is consistent across
-   * chains with wildly different block times.
+   * Block-unit because reorg safety is measured in block depth.
    *
-   * Default: 64. On Ethereum that's ~13 minutes, on PulseChain
-   * ~2 minutes — enough to outlive any realistic reorg on either
-   * chain. Tune up for archival-style use cases.
+   * Default: 64 blocks — enough to outlive any realistic reorg on
+   * the chains this package targets. Wall-clock per chain at this
+   * default: Ethereum ~13 min (12s blocks), PulseChain ~11 min
+   * (10s blocks). Tune up for archival-style use cases or chains
+   * with weaker finality guarantees.
    */
   retentionBlocks?: number
 
@@ -797,15 +935,21 @@ function createInMemoryStore(options?: InMemoryStoreOptions): TxTrackerStore
 
 ### 10.1 Why block-units, not seconds
 
-The retention default has to mean the same thing across chains. A
-`retentionMs: 600_000` default means very different things on
-Ethereum (12s blocks → ~50 blocks) vs. Polygon (2s → ~300 blocks) vs.
-sub-second L2 rollups (→ thousands of blocks). What actually matters
-for reorg safety is **block depth** — `retentionBlocks: 64` means
-"outlive any realistic reorg" on every chain.
+What actually matters for reorg safety is **block depth**, full stop.
+Reorgs are measured in blocks; finality is expressed in blocks; a
+record retained "long enough that a reorg can't make it suddenly
+relevant again" is a statement about block depth, not seconds.
+Time-based retention would conflate two unrelated quantities (block
+production rate, finality depth) into one knob, and the right answer
+to "is this record still possibly affected by a reorg" stays the same
+regardless of whether the chain's block time is 12s or 10s or 2s.
 
-The spec documents the wall-clock implication per chain in a section of
-the README, but the configuration knob stays in block-units.
+For chains the package primarily targets the wall-clock implication
+of `retentionBlocks: 64` is roughly comparable (Ethereum ~13 min,
+PulseChain ~11 min — within 20%); the block-unit framing only
+*matters* when comparing to faster-block chains (Polygon ~2 min,
+sub-second L2 rollups well under a minute). Either way the knob is
+expressed in the unit the underlying invariant lives in.
 
 ### 10.2 Memory profile
 
@@ -980,59 +1124,87 @@ events.
 
 ---
 
-## 14. Integration with `GasOracle`
+## 14. Composition via `ChainSource`
 
-The "piggyback architecture" — when an oracle is passed in:
+The tracker and the oracle are **siblings**, both consumers of the
+same `ChainSource`. There is no direct dependency between them in
+either direction. A consumer who wants both reads from a shared source:
 
 ```ts
-const oracle = createGasOracle({ client, chainId: 1, keepMempoolSnapshot: true })
-oracle.start()
+import { createPublicClient, http } from 'viem'
+import { mainnet } from 'viem/chains'
+import { createChainSource } from '@valve-tech/gas-oracle/chain-source'
+import { createGasOracle } from '@valve-tech/gas-oracle'
+import { createTxTracker } from '@valve-tech/gas-oracle/tx-tracker'
 
-const tracker = createTxTracker({ client, chainId: 1, oracle })
+const client = createPublicClient({ chain: mainnet, transport: http() })
+
+// One source — owns the upstream poll cycle and capability probe.
+const source = createChainSource({ client })
+source.start()
+
+// Two siblings — both consume the same source, neither depends
+// on the other.
+const oracle  = createGasOracle({ source, chainId: 1 })
+const tracker = createTxTracker({ source, chainId: 1 })
+oracle.start()
 tracker.start()
 ```
 
-The tracker:
+The source fans the same upstream block / mempool stream out to both
+subscribers; **only one upstream RPC cycle**, regardless of how many
+consumers attach. Both can be started, stopped, and reconfigured
+independently.
 
-1. Subscribes to `oracle.subscribe((state) => ...)` once. Each new
-   `state` triggers an inclusion-check pass against tracked hashes
-   using `state.ring[0].tips` and `state.ring[0].hash`.
-2. Reads `oracle.getMempoolSnapshot()` for `seen-in-mempool` /
-   `left-mempool` detection on every state-change.
-3. Walks `state.ring` for reorg detection — re-uses the rolling block
-   history the oracle already maintains.
-4. Does NOT issue its own `eth_getBlockByNumber` for the same heights
-   the oracle just fetched. That would be a double-poll.
-5. Issues `eth_getTransactionReceipt` independently when needed (per
-   `lostSignalPolicy: 'receipt-poll-fallback'` or when the consumer
-   directly calls a status getter).
+A consumer that only wants tx tracking (no gas tiers) skips the oracle:
 
-When `oracle` is **not** passed, the tracker runs its own minimal poll
-loop on `pollIntervalMs`, fetching only what it needs for the
-currently-tracked set. This standalone path is for consumers who don't
-need gas-tier data but do want tx tracking — wallets that get tier
-data from elsewhere, for example.
+```ts
+const source  = createChainSource({ client })
+const tracker = createTxTracker({ source, chainId: 1 })
+source.start(); tracker.start()
+```
+
+A consumer that only wants gas tiers — the existing v0.2.x use case —
+keeps the v0.2.x shorthand:
+
+```ts
+const oracle = createGasOracle({ client, chainId: 1 })  // creates a private source
+oracle.start()
+```
+
+`createGasOracle({ client })` is preserved for backward compatibility
+(see §3.3); internally it constructs and owns a `ChainSource`. The
+preferred shape for new code is `createGasOracle({ source })` —
+explicit, composable.
 
 ### 14.1 Lifecycle composition
 
-`oracle.stop()` does NOT stop a tracker that was constructed with it.
-The tracker holds its own subscription handle and continues operating
-on cached state until `tracker.stop()` is called. This matches the
-"each surface owns its lifecycle" pattern from `viem-transport.ts`
-where `withGasOracle` returns a `stopGasOracle()` handle.
+Each surface owns its own lifecycle. `source.stop()` tears down the
+upstream poll loop and unsubscribes from any `eth_subscribe` channels;
+calling it while consumers are still attached is allowed but means
+they stop receiving events (their `subscribeBlocks` / `subscribeMempool`
+callbacks simply stop firing). `oracle.stop()` and `tracker.stop()`
+unsubscribe from the source they were given but do **not** stop the
+source itself — the consumer that constructed the source is the one
+who calls `source.stop()`.
 
-The tracker exposes `unsubscribeFromOracle()` for the rare case of
-swapping which oracle the tracker is connected to without recreating
-the tracker.
+The "each surface owns its lifecycle" pattern matches
+`viem-transport.ts`'s `withGasOracle(...).stopGasOracle()` and is the
+existing convention.
 
-### 14.2 Feature elevation: `oracle.subscribe` becomes the internal event bus
+### 14.2 Multi-subscriber `ChainSource` is the internal event bus
 
-This is the first **internal** consumer of `oracle.subscribe`. Today
-that subscriber slot is documented as an egress hook ("publish to
-Redis, metrics, WS"). With the tracker landing, it becomes an
-internal event bus too — a primitive that other features in the
-package can compose on. Future stateful surfaces should follow the
-same pattern (sub-export, subscribe to oracle, no double-polling).
+`ChainSource` is explicitly designed for **multiple subscribers per
+stream**. The earlier draft of this spec named `oracle.subscribe` as
+"the internal event bus" — that framing is gone. The bus is
+`ChainSource`, not `GasOracle.subscribe`. New stateful features in
+the package compose on the source the same way the oracle and the
+tracker do; the source is the canonical place to add a new derived
+view of the chain.
+
+`oracle.subscribe(state => ...)` remains an **egress** hook — for
+consumers piping `GasOracleState` to Redis / metrics / a WebSocket
+broadcast. It is NOT a primitive other features should layer on.
 
 ---
 
@@ -1063,13 +1235,17 @@ non-durable" carve-out.
 ### 16.1 `examples/07-tx-tracker.ts` — minimal tracker
 
 ```ts
-// Track a single hash with the async iterator. No oracle.
+// Track a single hash with the async iterator. Tracker only — no oracle.
 import { createPublicClient, http } from 'viem'
 import { mainnet } from 'viem/chains'
+import { createChainSource } from '@valve-tech/gas-oracle/chain-source'
 import { createTxTracker } from '@valve-tech/gas-oracle/tx-tracker'
 
-const client = createPublicClient({ chain: mainnet, transport: http() })
-const tracker = createTxTracker({ client, chainId: 1 })
+const client  = createPublicClient({ chain: mainnet, transport: http() })
+const source  = createChainSource({ client })
+const tracker = createTxTracker({ source, chainId: 1 })
+
+source.start()
 tracker.start()
 
 const hash = '0xabc...'
@@ -1077,15 +1253,24 @@ for await (const event of tracker.track(hash)) {
   console.log(event.kind, event.source, event.at.blockNumber)
   if (event.kind === 'seen-in-block' && event.confirmations >= 6) break
 }
+
 tracker.stop()
+source.stop()
 ```
 
-### 16.2 `examples/08-tx-tracker-with-oracle.ts` — piggyback
+### 16.2 `examples/08-tx-tracker-with-oracle.ts` — shared `ChainSource`
 
 ```ts
-const oracle = createGasOracle({ client, chainId: 1, keepMempoolSnapshot: true })
+import { createChainSource } from '@valve-tech/gas-oracle/chain-source'
+import { createGasOracle } from '@valve-tech/gas-oracle'
+import { createTxTracker } from '@valve-tech/gas-oracle/tx-tracker'
+
+const source  = createChainSource({ client })
+const oracle  = createGasOracle({ source, chainId: 1, priorityModel: 'eip1559' })
+const tracker = createTxTracker({ source, chainId: 1 })
+
+source.start()
 oracle.start()
-const tracker = createTxTracker({ client, chainId: 1, oracle })
 tracker.start()
 
 // Wallet UI — neutral observation, consumer-side interpretation.
@@ -1096,6 +1281,8 @@ tracker.subscribe(hash, (event) => {
   if (event.kind === 'unseen-for-N-blocks' && event.blocks > 30) ui.set('Likely dropped')
   if (event.kind === 'signal-degraded') ui.set('Connection unstable — observation degraded')
 })
+
+// One source — one upstream poll cycle — feeding both consumers.
 ```
 
 ### 16.3 `examples/09-bulk-from-address.ts` — indexer-style
@@ -1133,12 +1320,21 @@ events. Layered:
 
 ### 17.2 Integration tests (`src/tx-tracker/tracker.test.ts`)
 
-- Drive `createTxTracker` with a stubbed `client` (no live RPC).
-- Feed it synthetic block + mempool snapshots through a simulated
-  oracle subscription.
+- Drive `createTxTracker` with a stub `ChainSource` — a hand-rolled
+  object implementing the §3.2 interface, no live RPC. The
+  `ChainSource` interface is the testing seam: tests fixture the
+  source's `subscribeBlocks` / `subscribeMempool` callbacks to fire
+  on demand and the on-demand methods (`getReceipt`, `getTransaction`)
+  to return fixture data.
+- Drive synthetic block + mempool snapshots into the source's
+  subscribers; assert the events the tracker emits.
 - Assert end-to-end event sequences for: simple inclusion, reorg
   before confirmation, replacement-by-bumped-tip, dropped tx,
-  WS-drop-mid-tracking, durable subscription resume.
+  WS-drop-mid-tracking (re-probe), durable subscription resume.
+
+A separate suite (`src/chain-source/source.test.ts`) tests the source
+itself: probe behavior, push/poll fan-out, multi-subscriber correctness
+(N subscribers see identical streams), reconnect re-probe.
 
 ### 17.3 Capability-matrix matrix tests
 
@@ -1227,10 +1423,10 @@ real consumer driving it.
 
 | Method | Purpose | When called | If `unavailable`/`gated` |
 | --- | --- | --- | --- |
-| `eth_subscribe('newHeads')` | Push new-block events | Once at start, when capability is `subscription` | Fall back to block-poll via oracle / standalone tick |
-| `eth_subscribe('newPendingTransactions')` | Push mempool ingress | Once at start, when capability is `subscription` | Fall back to `txpool_content` snapshot at oracle tick |
-| `eth_getBlockByNumber('latest', true)` | Block-poll inclusion-check | Every oracle tick (oracle-piggyback) or every `pollIntervalMs` (standalone) | Tracker can't operate without this; throw at construction if it's gated |
-| `txpool_content` | Mempool snapshot for `seen-in-mempool` / bulk matching | Every oracle tick if `keepMempoolSnapshot: true` | Disable mempool path; `signal-degraded { capabilityLost: 'txpoolContent' }` |
+| `eth_subscribe('newHeads')` | Push new-block events | Once at start, when capability is `subscription` | Fall back to block-poll on the source's tick |
+| `eth_subscribe('newPendingTransactions')` | Push mempool ingress | Once at start, when capability is `subscription` | Fall back to `txpool_content` snapshot on the source's tick |
+| `eth_getBlockByNumber('latest', true)` | Block-poll inclusion-check | Every source tick (one cycle, fanned to all subscribers) | Tracker can't operate without this; source throws at construction if it's gated |
+| `txpool_content` | Mempool snapshot for `seen-in-mempool` / bulk matching | Every source tick (one fetch, fanned to all subscribers) | Disable mempool path; `signal-degraded { capabilityLost: 'txpoolContent' }` |
 | `eth_getTransactionReceipt` | Inclusion-check fallback when block-poll missed | Per-tracked-hash, per-tick when `lostSignalPolicy === 'receipt-poll-fallback'` | Replacement detection can't run; `capabilities().receiptByHash === 'unavailable'` |
 | `eth_getTransactionByHash` | Look up (from, nonce) for replacement detection | Once per tracked hash on first observation | Replacement detection can't run; `replaced-by` events never fire |
 | `eth_getTransactionCount(latest)` | Find canonical-mined nonce on a sender | When `replaced-by` detection is needed | Same as above |
