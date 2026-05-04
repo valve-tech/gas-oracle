@@ -13,7 +13,11 @@
 
 import type { PublicClient } from 'viem'
 
-import { fetchOracleInputs, type OraclePollInputs } from './transport.js'
+import {
+  fetchHeadBlockNumber,
+  fetchOracleInputs,
+  type OraclePollInputs,
+} from './transport.js'
 import {
   computeBlobBaseFee,
   computeTiers,
@@ -89,6 +93,66 @@ export interface CreateGasOracleOptions {
    * keep this off in browser/mobile contexts. Default `false`.
    */
   keepMempoolSnapshot?: boolean
+  /**
+   * When `true` (default), the poll loop is gated on having at least
+   * one active subscriber. `start()` is still called explicitly, but
+   * the loop only actually fires `eth_*` calls when a subscriber is
+   * attached. The 0 → 1 subscriber transition triggers an immediate
+   * cycle plus interval start; the n → 0 transition pauses (subject
+   * to `staleAfter`).
+   *
+   * This avoids the dapp-pattern foot-gun where two oracles
+   * (PulseChain + Base) keep hot-polling at 10s intervals while the
+   * user is on a static page that doesn't read either. Set `false`
+   * to restore the v0.2.5 always-poll-after-start behavior.
+   *
+   * IMPORTANT: with `pauseWhenIdle: true`, `getState()` returns
+   * `null` until either (a) a subscriber attaches, OR (b) the caller
+   * runs `pollOnce()` once to seed state. Callers that pull state
+   * synchronously without subscribing should either subscribe to a
+   * no-op (`oracle.subscribe(() => {})`) or seed via `pollOnce()`.
+   */
+  pauseWhenIdle?: boolean
+  /**
+   * Wall-clock window (ms) to keep the poll loop alive after the last
+   * subscriber detaches, before pausing. Useful for "snappy UI
+   * re-mount" where a component briefly unmounts then re-mounts (e.g.
+   * route transitions). Cached state stays warm during this window.
+   *
+   * Default `0` (pause immediately on last unsubscribe). Set to e.g.
+   * `5_000` to keep the loop running for 5s after the last consumer
+   * leaves. Ignored when `pauseWhenIdle` is `false`.
+   */
+  staleAfter?: number
+  /**
+   * When `true` (default), each tick first fires a cheap
+   * `eth_blockNumber` probe. If the head hasn't moved since the
+   * previous tick, the rest of the cycle is skipped — no expensive
+   * `eth_getBlockByNumber(_, true)` / `eth_feeHistory` /
+   * `txpool_content`. The fee landscape can't change without a new
+   * block, so polling faster than block time is wasted RPC.
+   *
+   * For chains with sub-second blocks (some L2s), this is a no-op
+   * because the head moves every tick anyway. For PulseChain (~10s)
+   * and Ethereum (12s) on a 10s poll interval, this collapses ~90%
+   * of ticks down to a single probe call.
+   *
+   * `pollOnce()` always bypasses the gate — explicit out-of-band
+   * polls fire the full cycle.
+   */
+  blockGatedPolling?: boolean
+  /**
+   * When `true`, the oracle subscribes to the browser's
+   * `visibilitychange` event and pauses the poll loop while the tab
+   * is hidden. Resumes (and emits a fresh sample) on
+   * `visibilityState === 'visible'`. Default `false`.
+   *
+   * Browsers already throttle background-tab timers but don't pause
+   * network requests — explicit pause is several × cheaper. Safe to
+   * enable in any browser context; auto-no-ops in Node / SSR /
+   * Web Worker contexts where `document` is undefined.
+   */
+  pauseWhenHidden?: boolean
 }
 
 export interface GasOracle {
@@ -274,9 +338,18 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
 
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
   const retainMempool = options.keepMempoolSnapshot === true
+  const pauseWhenIdle = options.pauseWhenIdle !== false
+  const blockGatedPolling = options.blockGatedPolling !== false
+  const staleAfter = options.staleAfter ?? 0
+  const pauseWhenHidden = options.pauseWhenHidden === true
+
   let state: GasOracleState | null = null
   let mempoolSnapshot: NormalizedMempool | null = null
   let timer: ReturnType<typeof setInterval> | null = null
+  let staleTimer: ReturnType<typeof setTimeout> | null = null
+  let lastSeenBlock: bigint | null = null
+  let started = false
+  let visibilityListener: (() => void) | null = null
   const subscribers = new Set<(s: GasOracleState) => void>()
 
   const notify = (next: GasOracleState): void => {
@@ -285,7 +358,10 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
     }
   }
 
-  const cycle = async (): Promise<GasOracleState | null> => {
+  // The expensive cycle: full RPC fan-out + reduce + notify. Used
+  // unconditionally by `pollOnce()` and as the second step of the
+  // tick when block-gating allows.
+  const fullCycle = async (): Promise<GasOracleState | null> => {
     const inputs = await fetchOracleInputs(options.client, {
       onError: options.onError,
       poll: options.poll,
@@ -300,6 +376,7 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
     })
     if (next) {
       state = next
+      lastSeenBlock = next.blockNumber
       if (retainMempool) {
         // Re-normalize each cycle. `inputs.txPool` is null when the
         // mempool RPC is gated/disabled — store an empty snapshot
@@ -311,30 +388,194 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
     return next
   }
 
+  // The interval-driven cycle. Cheap-probes the head block first;
+  // skips the expensive bits when the head hasn't moved.
+  const tickCycle = async (): Promise<GasOracleState | null> => {
+    if (blockGatedPolling) {
+      const head = await fetchHeadBlockNumber(
+        options.client,
+        options.onError ? (err) => options.onError!('eth_blockNumber', err) : undefined,
+      )
+      if (head !== null && lastSeenBlock !== null && head === lastSeenBlock) {
+        // Head hasn't moved — no fee-landscape change is possible.
+        // Skip the expensive cycle. State and subscribers are
+        // unchanged from the previous tick.
+        return state
+      }
+      // head === null (probe failed) falls through to fullCycle —
+      // we'd rather pay one extra cycle than block on a flaky
+      // upstream that can't even report `eth_blockNumber`.
+    }
+    return fullCycle()
+  }
+
+  const startLoop = (): void => {
+    if (timer !== null) return
+    if (staleTimer !== null) {
+      clearTimeout(staleTimer)
+      staleTimer = null
+    }
+    // Fire-and-forget the first cycle so callers don't block on RPC
+    // latency. The interval picks up from there.
+    void tickCycle()
+    timer = setInterval(() => { void tickCycle() }, pollIntervalMs)
+  }
+
+  const pauseLoop = (): void => {
+    if (timer !== null) {
+      clearInterval(timer)
+      timer = null
+    }
+    if (staleTimer !== null) {
+      clearTimeout(staleTimer)
+      staleTimer = null
+    }
+  }
+
+  const scheduleIdlePause = (): void => {
+    if (staleAfter <= 0) {
+      pauseLoop()
+      return
+    }
+    if (staleTimer !== null) return
+    staleTimer = setTimeout(() => {
+      pauseLoop()
+      staleTimer = null
+    }, staleAfter)
+  }
+
+  // Structural shape of the bits of `document` we use — kept narrow
+  // so the package doesn't need the DOM lib in tsconfig (`lib: ES2020`).
+  // The runtime check below is the only place this ever matters.
+  interface VisibilityDoc {
+    hidden: boolean
+    addEventListener: (event: 'visibilitychange', listener: () => void) => void
+    removeEventListener: (event: 'visibilitychange', listener: () => void) => void
+  }
+  const documentRef: VisibilityDoc | undefined =
+    typeof globalThis !== 'undefined' && 'document' in globalThis
+      ? (globalThis as { document?: VisibilityDoc }).document
+      : undefined
+
+  const setupVisibilityHandling = (): void => {
+    if (!pauseWhenHidden || !documentRef) return
+    const listener = (): void => {
+      if (documentRef.hidden) {
+        pauseLoop()
+        return
+      }
+      // Tab became visible — resume if we have a reason to (no
+      // subscriber-gating, OR subscribers are present).
+      if (!pauseWhenIdle || subscribers.size > 0) {
+        startLoop()
+      }
+    }
+    documentRef.addEventListener('visibilitychange', listener)
+    visibilityListener = listener
+  }
+
+  const teardownVisibilityHandling = (): void => {
+    if (visibilityListener && documentRef) {
+      documentRef.removeEventListener('visibilitychange', visibilityListener)
+    }
+    visibilityListener = null
+  }
+
+  const isHidden = (): boolean => documentRef?.hidden === true
+
   return {
     start: () => {
-      if (timer !== null) return
-      // Fire-and-forget the first cycle so callers don't block on RPC
-      // latency. The interval picks up from there.
-      void cycle()
-      timer = setInterval(() => { void cycle() }, pollIntervalMs)
+      if (started) return
+      started = true
+      setupVisibilityHandling()
+      // Only actually start the loop if (a) we don't gate on
+      // subscribers, OR (b) there's already a subscriber attached
+      // (rare but valid: subscribe before start). Visibility wins
+      // over both — never poll while hidden if pauseWhenHidden is on.
+      if (pauseWhenHidden && isHidden()) return
+      if (!pauseWhenIdle || subscribers.size > 0) {
+        startLoop()
+      }
     },
     stop: () => {
-      if (timer !== null) {
-        clearInterval(timer)
-        timer = null
-      }
+      pauseLoop()
+      teardownVisibilityHandling()
       state = null
       mempoolSnapshot = null
+      lastSeenBlock = null
+      started = false
     },
     getState: () => state,
     getMempoolSnapshot: () => mempoolSnapshot,
-    pollOnce: () => cycle(),
+    // pollOnce explicitly bypasses block-gating — caller asked for a
+    // sample, give them a full one. State/lastSeenBlock are still
+    // updated so the next tick can gate against this.
+    pollOnce: () => fullCycle(),
     subscribe: (cb) => {
       subscribers.add(cb)
-      return () => { subscribers.delete(cb) }
+      // 0 → 1 transition: kick the loop awake (or cancel the
+      // stale-after pause that was about to fire).
+      if (started && pauseWhenIdle && subscribers.size === 1) {
+        if (!pauseWhenHidden || !isHidden()) {
+          startLoop()
+        }
+      }
+      return () => {
+        subscribers.delete(cb)
+        // n → 0 transition: schedule pause.
+        if (started && pauseWhenIdle && subscribers.size === 0) {
+          scheduleIdlePause()
+        }
+      }
     },
   }
+}
+
+/**
+ * One-shot sample helper for callers who need a single fee snapshot
+ * without standing up a long-lived oracle. Right for tx-submit flows
+ * that price one transaction and don't need streaming updates.
+ *
+ * Composes the existing `fetchOracleInputs` (I/O) + `reducePollInputs`
+ * (pure) split — see README "RPC transport modes" for the offline
+ * variant where you supply your own `OraclePollInputs`.
+ *
+ * @example
+ *   const snapshot = await sampleGasFees({
+ *     client,
+ *     chainId: 1,
+ *     priorityModel: 'eip1559',
+ *   })
+ *   const tip = snapshot?.tiers.fast.maxPriorityFeePerGas
+ */
+export const sampleGasFees = async (options: {
+  /** viem PublicClient pointed at the upstream RPC. */
+  client: PublicClient
+  /** EVM chain ID. Echoed back in the result. */
+  chainId: number
+  /** See `CreateGasOracleOptions.priorityFeeDecayCap`. */
+  priorityFeeDecayCap?: bigint | null
+  /** See `CreateGasOracleOptions.priorityModel`. */
+  priorityModel?: PriorityModel
+  /** See `CreateGasOracleOptions.baseFeeLivenessBlocks`. */
+  baseFeeLivenessBlocks?: number
+  /** See `CreateGasOracleOptions.poll`. */
+  poll?: PollOptions
+  /** See `CreateGasOracleOptions.onError`. */
+  onError?: (method: string, err: unknown) => void
+}): Promise<GasOracleState | null> => {
+  const inputs = await fetchOracleInputs(options.client, {
+    onError: options.onError,
+    poll: options.poll,
+  })
+  return reducePollInputs({
+    inputs,
+    chainId: options.chainId,
+    prev: null,
+    priorityFeeDecayCap: options.priorityFeeDecayCap,
+    priorityModel: options.priorityModel,
+    baseFeeLivenessBlocks: options.baseFeeLivenessBlocks,
+  })
 }
 
 // Re-export for callers who want to drive the reducer directly (e.g.,

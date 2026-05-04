@@ -91,7 +91,17 @@ export interface GasOracleActions {
 
 export const gasOracleActions = (options: GasOracleActionsOptions) =>
   (client: PublicClient): GasOracleActions => {
-    const oracle: GasOracle = createGasOracle({ ...options, client })
+    // viem-actions consumers pull state via `client.getGasTiers()`
+    // etc. — they don't subscribe. Default `pauseWhenIdle: false`
+    // here so the eager lifecycle keeps the cache warm even without
+    // an explicit subscriber. Callers who want subscriber-gated
+    // behavior should construct an oracle directly instead of
+    // going through actions.
+    const oracle: GasOracle = createGasOracle({
+      pauseWhenIdle: false,
+      ...options,
+      client,
+    })
     const lifecycle = options.lifecycle ?? 'eager'
     let started = false
     if (lifecycle === 'eager') {

@@ -207,7 +207,15 @@ export const withGasOracle = (
   // dispatch — chainId validation happens elsewhere.
   const oracleInner = innerTransport({})
   const oracleClient = { request: oracleInner.request } as Parameters<typeof createGasOracle>[0]['client']
-  const oracle = createGasOracle({ ...options, client: oracleClient })
+  // viem-transport intercepts RPC methods, which is a pull-based
+  // access pattern (state read inside the request handler). Default
+  // `pauseWhenIdle: false` so the cache stays warm across intercepts
+  // without requiring an explicit subscriber. Callers can override.
+  const oracle = createGasOracle({
+    pauseWhenIdle: false,
+    ...options,
+    client: oracleClient,
+  })
   if ((options.lifecycle ?? 'eager') === 'eager') oracle.start()
 
   const wrapped = custom({

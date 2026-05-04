@@ -5,6 +5,80 @@ All notable changes to `@valve-tech/gas-oracle` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.6] — 2026-05-04
+
+### Added
+- `pauseWhenIdle` option on `CreateGasOracleOptions` (default `true`).
+  The poll loop is now gated on having at least one active subscriber
+  — `start()` is still called explicitly, but the loop only fires
+  RPC calls when a subscriber is attached. The 0 → 1 subscriber
+  transition triggers an immediate cycle plus interval start; the
+  n → 0 transition pauses (subject to `staleAfter`). Set `false` to
+  restore the v0.2.5 always-poll-after-start behavior.
+- `staleAfter` option (ms; default `0`) — keeps the loop alive for
+  the specified window after the last unsubscribe. Useful for
+  "snappy UI re-mount" where a component unmounts then re-mounts
+  briefly (route transitions). Cached state stays warm during the
+  window.
+- `blockGatedPolling` option (default `true`). Each tick first fires
+  a cheap `eth_blockNumber` probe; if the head hasn't moved since
+  the previous tick, the rest of the cycle is skipped — no expensive
+  `eth_getBlockByNumber(_, true)` / `eth_feeHistory` /
+  `txpool_content`. The fee landscape can't change without a new
+  block, so polling faster than block time is wasted RPC. For
+  PulseChain (~10s) and Ethereum (12s) on a 10s interval this
+  collapses ~90% of ticks down to a single probe call. `pollOnce()`
+  always bypasses the gate.
+- `pauseWhenHidden` option (default `false`, browser-only). When
+  enabled, subscribes to the browser's `visibilitychange` event and
+  pauses the poll loop while the tab is hidden. Resumes (and emits
+  a fresh sample) on `visibilityState === 'visible'`. Auto-no-ops
+  in Node / SSR / Web Worker contexts.
+- `sampleGasFees(options)` — top-level one-shot helper that returns
+  a single fee snapshot without standing up a long-lived oracle.
+  Right for tx-submit flows that price one transaction and don't
+  need streaming updates. Composes the existing `fetchOracleInputs`
+  + `reducePollInputs` split.
+- `fetchHeadBlockNumber(client, onError?)` — exported helper for the
+  cheap `eth_blockNumber` probe that powers block-gated polling.
+
+### Changed
+- **Default behavior change**: `pauseWhenIdle: true` is the default.
+  Existing call sites that did `oracle.start()` followed by
+  `oracle.getState()` (without subscribing) now see `null` until
+  either (a) a subscriber attaches, OR (b) `pollOnce()` is called.
+  Migration paths:
+  - Subscribe to a no-op: `oracle.subscribe(() => {})` keeps the
+    loop alive and the cache warm for `getState()` reads.
+  - Set `pauseWhenIdle: false` to restore v0.2.5 behavior.
+  - Use `pollOnce()` for one-shot reads.
+  - For ad-hoc `client.getGasTiers()`-style use, see the new
+    `sampleGasFees` helper.
+- The viem-actions extension (`gasOracleActions(...)`) and
+  viem-transport wrapper (`withGasOracle(...)`) both default
+  `pauseWhenIdle: false` for their internal oracle. Their access
+  pattern is pull-based (state read inside the request handler),
+  so subscriber-gated pause would always be miss. Callers can
+  override by passing `pauseWhenIdle` explicitly.
+
+### Notes
+- This release lands the most-requested fix in production usage:
+  idle traffic when nothing is reading the oracle. A multi-chain
+  dapp running two oracles on a static page used to fire 8–20
+  RPCs per chain every 10s; with `pauseWhenIdle: true` (default)
+  that drops to zero. With `blockGatedPolling: true` (default), the
+  steady-state RPC cost on chains with non-trivial block times
+  drops to ~1 call per tick (the cheap `eth_blockNumber` probe)
+  whenever the head hasn't moved.
+- These primitives are the v0.2.x precursor to the
+  `@valve-tech/chain-source` package landing in v0.3.0; the
+  subscriber-refcount + block-gating + visibility hooks move into
+  that shared layer at v0.3.0 so both gas-oracle and tx-tracker
+  inherit them. See `docs/tx-tracker-spec.md` in the repo.
+- No API removals. Every existing call site continues to work
+  byte-for-byte; the only behavior change is the new default of
+  `pauseWhenIdle: true`.
+
 ## [0.2.5] — 2026-05-03
 
 ### Added

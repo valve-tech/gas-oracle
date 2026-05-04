@@ -323,7 +323,16 @@ describe('createGasOracle', () => {
       if (method === 'eth_getBlockByNumber') return okBlock()
       return null
     })
-    const oracle = createGasOracle({ client, chainId: 1, pollIntervalMs: 100 })
+    // Disable subscriber-gating + block-gating to test the v0.2.5-shape
+    // base polling behavior. Subscriber-gated and block-gated paths are
+    // exercised independently below.
+    const oracle = createGasOracle({
+      client,
+      chainId: 1,
+      pollIntervalMs: 100,
+      pauseWhenIdle: false,
+      blockGatedPolling: false,
+    })
 
     oracle.start()
     oracle.start() // no-op
@@ -340,7 +349,13 @@ describe('createGasOracle', () => {
       if (method === 'eth_getBlockByNumber') return okBlock()
       return null
     })
-    const oracle = createGasOracle({ client, chainId: 1, pollIntervalMs: 100 })
+    const oracle = createGasOracle({
+      client,
+      chainId: 1,
+      pollIntervalMs: 100,
+      pauseWhenIdle: false,
+      blockGatedPolling: false,
+    })
 
     oracle.start()
     await flush() // initial poll
@@ -599,5 +614,286 @@ describe('createGasOracle', () => {
     expect(eip!.tiers.fast.maxPriorityFeePerGas).toBeGreaterThan(
       flat!.tiers.fast.maxPriorityFeePerGas,
     )
+  })
+
+  /* ------------------------------------------------------------------------ */
+  /*  Subscriber-gated polling (pauseWhenIdle, default true)                  */
+  /* ------------------------------------------------------------------------ */
+
+  it('pauseWhenIdle (default) — start() does not poll without a subscriber', async () => {
+    const { client, request } = stubClient((method) => {
+      if (method === 'eth_blockNumber') return '0x1234'
+      if (method === 'eth_feeHistory') return okFeeHistory()
+      if (method === 'eth_getBlockByNumber') return okBlock()
+      return null
+    })
+    const oracle = createGasOracle({ client, chainId: 1, pollIntervalMs: 100 })
+
+    oracle.start()
+    await flush()
+    await vi.advanceTimersByTimeAsync(500)
+    await flush()
+
+    // No subscribers → loop never fires → no RPC calls.
+    expect(request).not.toHaveBeenCalled()
+    oracle.stop()
+  })
+
+  it('pauseWhenIdle — first subscriber resumes the loop and emits a fresh sample', async () => {
+    const { client, request } = stubClient((method) => {
+      if (method === 'eth_blockNumber') return '0x1234'
+      if (method === 'eth_feeHistory') return okFeeHistory()
+      if (method === 'eth_getBlockByNumber') return okBlock()
+      return null
+    })
+    const oracle = createGasOracle({
+      client,
+      chainId: 1,
+      pollIntervalMs: 100,
+      blockGatedPolling: false, // isolate subscriber-gating from block-gating
+    })
+    oracle.start()
+    await flush()
+    expect(request).not.toHaveBeenCalled()
+
+    const cb = vi.fn()
+    const unsubscribe = oracle.subscribe(cb)
+    // The cycle is fire-and-forget — drain microtasks until notify() runs.
+    // fetchOracleInputs awaits Promise.all([3 safeRequests]) which is
+    // multiple microtasks deep, so a couple of resolves aren't enough.
+    for (let i = 0; i < 10; i++) await Promise.resolve()
+
+    // First subscriber → immediate cycle fired.
+    expect(request).toHaveBeenCalledTimes(3)
+    expect(cb).toHaveBeenCalledTimes(1)
+
+    unsubscribe()
+    oracle.stop()
+  })
+
+  it('pauseWhenIdle — last unsubscriber pauses the loop (staleAfter: 0)', async () => {
+    const { client, request } = stubClient((method) => {
+      if (method === 'eth_blockNumber') return '0x1234'
+      if (method === 'eth_feeHistory') return okFeeHistory()
+      if (method === 'eth_getBlockByNumber') return okBlock()
+      return null
+    })
+    const oracle = createGasOracle({
+      client,
+      chainId: 1,
+      pollIntervalMs: 100,
+      blockGatedPolling: false,
+    })
+    oracle.start()
+    const unsubscribe = oracle.subscribe(() => {})
+    await flush()
+    const callsAfterFirstCycle = request.mock.calls.length
+    expect(callsAfterFirstCycle).toBeGreaterThan(0)
+
+    unsubscribe()
+    await vi.advanceTimersByTimeAsync(500)
+    await flush()
+    // Loop is paused → no further calls.
+    expect(request).toHaveBeenCalledTimes(callsAfterFirstCycle)
+    oracle.stop()
+  })
+
+  it('pauseWhenIdle + staleAfter — keeps loop alive after last unsubscribe for the window', async () => {
+    const { client, request } = stubClient((method) => {
+      if (method === 'eth_blockNumber') return '0x1234'
+      if (method === 'eth_feeHistory') return okFeeHistory()
+      if (method === 'eth_getBlockByNumber') return okBlock()
+      return null
+    })
+    const oracle = createGasOracle({
+      client,
+      chainId: 1,
+      pollIntervalMs: 100,
+      blockGatedPolling: false,
+      staleAfter: 250,
+    })
+    oracle.start()
+    const unsubscribe = oracle.subscribe(() => {})
+    await flush()
+    const callsAfterSubscribe = request.mock.calls.length
+
+    unsubscribe()
+    // Within the staleAfter window, the loop continues.
+    await vi.advanceTimersByTimeAsync(100)
+    await flush()
+    expect(request.mock.calls.length).toBeGreaterThan(callsAfterSubscribe)
+
+    // After staleAfter expires, the loop pauses.
+    await vi.advanceTimersByTimeAsync(300)
+    await flush()
+    const callsAfterPause = request.mock.calls.length
+    await vi.advanceTimersByTimeAsync(500)
+    await flush()
+    expect(request).toHaveBeenCalledTimes(callsAfterPause)
+    oracle.stop()
+  })
+
+  it('pauseWhenIdle: false — start() polls immediately without subscriber (v0.2.5 behavior)', async () => {
+    const { client, request } = stubClient((method) => {
+      if (method === 'eth_blockNumber') return '0x1234'
+      if (method === 'eth_feeHistory') return okFeeHistory()
+      if (method === 'eth_getBlockByNumber') return okBlock()
+      return null
+    })
+    const oracle = createGasOracle({
+      client,
+      chainId: 1,
+      pollIntervalMs: 100,
+      pauseWhenIdle: false,
+      blockGatedPolling: false,
+    })
+    oracle.start()
+    await flush()
+    expect(request).toHaveBeenCalled()
+    oracle.stop()
+  })
+
+  /* ------------------------------------------------------------------------ */
+  /*  Block-gated polling (default true)                                      */
+  /* ------------------------------------------------------------------------ */
+
+  it('blockGatedPolling — second tick at the same head skips the full fan-out', async () => {
+    let probeCount = 0
+    let blockCount = 0
+    const { client } = stubClient((method) => {
+      if (method === 'eth_blockNumber') {
+        probeCount += 1
+        return '0x1234'
+      }
+      if (method === 'eth_feeHistory') return okFeeHistory()
+      if (method === 'eth_getBlockByNumber') {
+        blockCount += 1
+        return okBlock()
+      }
+      return null
+    })
+    const oracle = createGasOracle({
+      client,
+      chainId: 1,
+      pollIntervalMs: 100,
+      pauseWhenIdle: false,
+    })
+    oracle.start()
+    await flush()
+    // First cycle: lastSeenBlock is null → full fan-out.
+    expect(probeCount).toBe(1)
+    expect(blockCount).toBe(1)
+
+    await vi.advanceTimersByTimeAsync(100)
+    await flush()
+    // Second cycle: head unchanged → probe only, no full fan-out.
+    expect(probeCount).toBe(2)
+    expect(blockCount).toBe(1)
+
+    oracle.stop()
+  })
+
+  it('blockGatedPolling — head change on second tick triggers full fan-out', async () => {
+    let blockCount = 0
+    let nextHead = '0x1234'
+    const { client } = stubClient((method) => {
+      if (method === 'eth_blockNumber') return nextHead
+      if (method === 'eth_feeHistory') return okFeeHistory()
+      if (method === 'eth_getBlockByNumber') {
+        blockCount += 1
+        return { ...okBlock(), number: nextHead }
+      }
+      return null
+    })
+    const oracle = createGasOracle({
+      client,
+      chainId: 1,
+      pollIntervalMs: 100,
+      pauseWhenIdle: false,
+    })
+    oracle.start()
+    await flush()
+    expect(blockCount).toBe(1)
+
+    nextHead = '0x1235' // head moved
+    await vi.advanceTimersByTimeAsync(100)
+    await flush()
+    expect(blockCount).toBe(2)
+
+    oracle.stop()
+  })
+
+  it('pollOnce always bypasses block-gating', async () => {
+    let blockCount = 0
+    const { client } = stubClient((method) => {
+      if (method === 'eth_blockNumber') return '0x1234'
+      if (method === 'eth_feeHistory') return okFeeHistory()
+      if (method === 'eth_getBlockByNumber') {
+        blockCount += 1
+        return okBlock()
+      }
+      return null
+    })
+    const oracle = createGasOracle({ client, chainId: 1 })
+    await oracle.pollOnce()
+    await oracle.pollOnce()
+    await oracle.pollOnce()
+    // All three pollOnce calls should fire fullCycle, even though the
+    // head is identical across all three.
+    expect(blockCount).toBe(3)
+  })
+
+  /* ------------------------------------------------------------------------ */
+  /*  pauseWhenHidden (browser visibility)                                    */
+  /* ------------------------------------------------------------------------ */
+
+  it('pauseWhenHidden — pauses on visibilitychange when document.hidden becomes true', async () => {
+    // Stub a minimal document on globalThis.
+    const listeners: Array<() => void> = []
+    let hidden = false
+    const stubDoc = {
+      get hidden() { return hidden },
+      addEventListener: (_: string, cb: () => void) => { listeners.push(cb) },
+      removeEventListener: (_: string, cb: () => void) => {
+        const i = listeners.indexOf(cb)
+        if (i >= 0) listeners.splice(i, 1)
+      },
+    }
+    ;(globalThis as { document?: typeof stubDoc }).document = stubDoc
+
+    const { client, request } = stubClient((method) => {
+      if (method === 'eth_blockNumber') return '0x1234'
+      if (method === 'eth_feeHistory') return okFeeHistory()
+      if (method === 'eth_getBlockByNumber') return okBlock()
+      return null
+    })
+    const oracle = createGasOracle({
+      client,
+      chainId: 1,
+      pollIntervalMs: 100,
+      pauseWhenIdle: false,
+      blockGatedPolling: false,
+      pauseWhenHidden: true,
+    })
+    oracle.start()
+    await flush()
+    const callsBeforeHide = request.mock.calls.length
+    expect(callsBeforeHide).toBeGreaterThan(0)
+
+    // Simulate tab going hidden.
+    hidden = true
+    listeners.forEach((cb) => cb())
+    await vi.advanceTimersByTimeAsync(500)
+    await flush()
+    expect(request).toHaveBeenCalledTimes(callsBeforeHide)
+
+    // Simulate tab becoming visible — loop resumes.
+    hidden = false
+    listeners.forEach((cb) => cb())
+    await flush()
+    expect(request.mock.calls.length).toBeGreaterThan(callsBeforeHide)
+
+    oracle.stop()
+    delete (globalThis as { document?: typeof stubDoc }).document
   })
 })

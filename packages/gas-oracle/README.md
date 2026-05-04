@@ -151,6 +151,109 @@ lookups without a second RPC roundtrip. Memory cost is the size of one
 `txpool_content` payload (5–15MB on busy ETH mainnet); leave off in
 browser/mobile contexts. Default `false`.
 
+## Idle-traffic controls (v0.2.6+)
+
+Real dapps run multiple oracles per session (e.g. PulseChain + Base)
+and idle on static pages where nothing is reading. Without controls,
+each oracle fires 8–20 RPC calls per chain every 10s for the lifetime
+of the instance — even when the user is on a different page or has
+the tab in the background. The four options below collapse that idle
+load to near-zero by default.
+
+### `pauseWhenIdle`
+
+Default `true`. Gates the poll loop on having at least one active
+subscriber. `start()` is still called explicitly, but the loop only
+fires RPC calls when at least one subscriber is attached:
+
+- 0 → 1 subscriber transition: immediate cycle + interval start.
+- n → 0 transition: pause (subject to `staleAfter`).
+
+```ts
+const oracle = createGasOracle({ client, chainId: 1 })
+oracle.start()
+// No RPC calls yet — no subscriber.
+
+const unsubscribe = oracle.subscribe((state) => {/* ... */})
+// Loop is now firing.
+
+unsubscribe()
+// Loop pauses.
+```
+
+> **Migration note for v0.2.5 → v0.2.6**: this changes default
+> behavior. If your code does `oracle.start()` then `oracle.getState()`
+> (synchronous read without subscribing), you'll now see `null`
+> until either a subscriber attaches or you run `pollOnce()`. Three
+> options:
+>
+> - Add `oracle.subscribe(() => {})` to keep the loop alive for
+>   `getState()` reads.
+> - Pass `pauseWhenIdle: false` to restore v0.2.5 behavior.
+> - For one-off reads, use `sampleGasFees({ client, chainId, ... })`.
+
+### `staleAfter`
+
+Wall-clock window (ms) to keep the loop alive after the last
+unsubscribe. Useful for "snappy UI re-mount" — if a component
+unmounts and remounts within this window, the cache stays warm and
+no fresh RPC roundtrip is needed. Default `0` (pause immediately).
+
+```ts
+createGasOracle({ client, chainId: 1, staleAfter: 5_000 })
+// Loop continues for 5s after the last subscriber leaves.
+```
+
+### `blockGatedPolling`
+
+Default `true`. Each tick fires a cheap `eth_blockNumber` probe
+first; if the head hasn't moved since the previous tick, the rest of
+the cycle is skipped — no `eth_getBlockByNumber(_, true)`, no
+`eth_feeHistory`, no `txpool_content`. The fee landscape can't change
+without a new block, so polling faster than block time is wasted RPC.
+
+For PulseChain (~10s blocks polled at 10s) and Ethereum (12s polled
+at 10s), this collapses ~90% of ticks to a single probe call. For
+sub-second L2s polled at 10s, it's a no-op (head always moves).
+
+`pollOnce()` always bypasses the gate — explicit out-of-band polls
+fire the full cycle.
+
+### `pauseWhenHidden`
+
+Default `false`. When `true`, subscribes to the browser's
+`visibilitychange` event and pauses the poll loop while the tab is
+hidden. Resumes on `visibilityState === 'visible'`. Browsers throttle
+background-tab timers but don't pause network requests — explicit
+pause is several × cheaper than relying on the throttle.
+
+Auto-no-ops in Node / SSR / Web Worker contexts where `document` is
+undefined.
+
+```ts
+createGasOracle({ client, chainId: 1, pauseWhenHidden: true })
+```
+
+### One-shot — `sampleGasFees`
+
+For callers who need a single fee snapshot without a long-lived
+oracle (typical tx-submit flow):
+
+```ts
+import { sampleGasFees } from '@valve-tech/gas-oracle'
+
+const snapshot = await sampleGasFees({
+  client,
+  chainId: 1,
+  priorityModel: 'eip1559',
+})
+const tip = snapshot?.tiers.fast.maxPriorityFeePerGas
+```
+
+No streaming, no interval, no subscribe. Fires one full RPC cycle
+and returns. Composes the existing `fetchOracleInputs` (I/O) +
+`reducePollInputs` (pure) split.
+
 ## Mempool inspection
 
 Two ways into the same data: pure helpers that take a normalized pool

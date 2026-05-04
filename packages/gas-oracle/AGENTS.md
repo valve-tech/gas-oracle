@@ -170,6 +170,13 @@ doesn't silently depend on the package version's default.
    `await oracle.pollOnce()` once after `start()` to force a synchronous
    first poll.
 
+   **v0.2.6+**: with `pauseWhenIdle: true` (now the default), the loop
+   only fires when at least one subscriber is attached. Calling
+   `oracle.start()` without subscribing means `getState()` returns
+   `null` indefinitely. For ad-hoc reads, use the `sampleGasFees(...)`
+   one-shot helper or pass `pauseWhenIdle: false` to restore the
+   v0.2.5 always-poll-after-start behavior.
+
 4. **Mempool snapshot is opt-in.** `keepMempoolSnapshot: false` (the
    default) means `findByHash`/`findInMempool`/`tipForBlockPosition` queries
    that take a `TxIdentifier` will throw. Set `true` if you need them.

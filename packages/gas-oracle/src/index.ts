@@ -16,6 +16,7 @@
 export {
   createGasOracle,
   reducePollInputs,
+  sampleGasFees,
   type CreateGasOracleOptions,
   type GasOracle,
 } from './oracle.js'
@@ -41,6 +42,7 @@ export {
 
 export {
   fetchOracleInputs,
+  fetchHeadBlockNumber,
   type FeeHistoryResult,
   type BlockResult,
   type TxPoolContent,

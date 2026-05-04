@@ -89,6 +89,26 @@ const safeRequest = async <T>(
 }
 
 /**
+ * Cheap head-block probe used by block-gated polling. Returns the
+ * latest block number as a `bigint`, or `null` if the RPC failed.
+ * Cost: a single `eth_blockNumber` call (no full block payload, no
+ * tx list, no receipts). Lets the oracle skip the expensive
+ * `fetchOracleInputs` cycle when nothing has moved since last tick.
+ */
+export const fetchHeadBlockNumber = async (
+  client: PublicClient,
+  onError?: (err: unknown) => void,
+): Promise<bigint | null> => {
+  const head = await safeRequest<string>(client, 'eth_blockNumber', [], onError)
+  if (head === null) return null
+  try {
+    return BigInt(head)
+  } catch {
+    return null
+  }
+}
+
+/**
  * One poll cycle's RPC fan-out. Returns whatever could be fetched —
  * `null` for any sub-call that failed OR was disabled by `poll`. The
  * caller (`oracle.ts`) handles the case where `block` is null (cycle

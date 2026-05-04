@@ -1,6 +1,6 @@
 {
   "name": "@valve-tech/gas-oracle",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Multi-tier gas-fee oracle for EVM chains. Computes slow/standard/fast/instant tier recommendations from block-included tips, mempool pending tips, and base-fee trend, with a configurable downside-decay cap and a chain-aware EIP-1559 priority cutoff. viem-native — pass it a PublicClient and it does the rest. Ships viem-actions and viem-transport subpaths for drop-in client extension and transport-wrapping.",
   "license": "MIT",
   "homepage": "https://github.com/valve-tech/evm-toolkit/tree/main/packages/gas-oracle#readme",
