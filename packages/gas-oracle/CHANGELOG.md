@@ -5,14 +5,32 @@ All notable changes to `@valve-tech/gas-oracle` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.3.0] — 2026-05-04
+## [0.3.1] — 2026-05-04
 
-> **First synchronized release in the `valve-tech/evm-toolkit`
+> **First fully-synchronized release in the `valve-tech/evm-toolkit`
 > monorepo.** All three packages
 > (`@valve-tech/chain-source`, `@valve-tech/gas-oracle`,
 > `@valve-tech/tx-tracker`) now ship in lockstep. Future releases use
-> a single `vX.Y.Z` tag on the repo. See the toolkit-level CHANGELOG
-> at the repo root for cross-package context.
+> a single `vX.Y.Z` tag on the repo.
+
+### Notes
+
+- v0.3.1 carries the same content as the planned v0.3.0 (idle-traffic
+  controls — see the v0.3.0 entry below for the full feature list).
+- v0.3.0 was a partial-publish workflow run: this package's publish
+  step failed with an OIDC trusted-publisher mismatch (the npm
+  trusted-publisher record was still pinned to the pre-rename
+  `valve-tech/gas-oracle` repo and didn't match the renamed
+  `valve-tech/evm-toolkit`). The publisher record was fixed; v0.3.1
+  is the first version of this package on npm in the v0.3.x line.
+
+## [0.3.0] — 2026-05-04 — *unpublished; superseded by 0.3.1*
+
+> Tagged but never published to npm — the OIDC trusted-publisher
+> mismatch above blocked this version's publish. Other packages in
+> the toolkit had partial outcomes for v0.3.0; see their CHANGELOGs
+> for details. v0.3.1 re-releases all three packages in lockstep
+> with this same content.
 
 ### Added
 - `pauseWhenIdle` option on `CreateGasOracleOptions` (default `true`).
