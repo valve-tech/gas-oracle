@@ -299,3 +299,44 @@ isn't listed there for any package, nothing ships.
 
 For the full release workflow, see
 `.claude/skills/releasing-evm-toolkit/SKILL.md`.
+
+## Rebasing a feature branch over a synced-bump release
+
+A predictable conflict shape arises when a feature PR sits open
+across one or more synchronized version bumps merging into `main`.
+The collision is always in `packages/<your-package>/CHANGELOG.md`,
+and it's mechanical, not semantic:
+
+- **Branch side:** added an `[Unreleased]` section between the file
+  header and the previous `[X.Y.Z]` section.
+- **Main side:** added one (or more) new `[A.B.C]` synced-bump
+  sections in the **same slot** between the header and that same
+  previous `[X.Y.Z]`.
+
+Resolution is always "keep both, in order": `[Unreleased]` first
+(top of the still-in-flight changes), then every newer
+`[A.B.C]` section main introduced, then the existing tail. No
+content needs to be merged inside any single section — the
+synced-bump entries are independent of whatever the feature branch
+changed.
+
+Two more notes about this pattern:
+
+- **No version bump in your CHANGELOG.** The feature branch keeps
+  its `[Unreleased]` section as-is — it'll get promoted to a real
+  version number whenever the next synced release PR lands, not as
+  part of the rebase.
+- **Cross-references are already written.** When a synced-bump
+  release lands while a feature PR is in flight, that release's
+  CHANGELOG entry typically calls out the in-flight PR by number
+  (e.g. *"the v0.3.x ChainSource implementation track is unaffected
+  by this release and remains in flight under PR #12"*). You don't
+  need to add a back-pointer from `[Unreleased]` to the synced
+  bumps — the synced bumps already point forward at you.
+
+If the feature branch touches files **outside** `CHANGELOG.md` that
+collide with a synced-bump's edits, that's a different problem
+(usually the synced bump touched `package.json` versions, root
+`package.json`, or the release workflow). Resolve those on a
+case-by-case basis — they're not mechanical the way the CHANGELOG
+collision is.

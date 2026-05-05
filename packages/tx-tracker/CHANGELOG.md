@@ -6,6 +6,19 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] — 2026-05-05
+
+### Notes
+
+- Synchronized release — no functional changes to this package
+  (still a stub on npm). Bumped in lockstep with
+  `@valve-tech/chain-source@0.6.0` (block-stream dedup + head-probe
+  gating in the source tick) and `@valve-tech/gas-oracle@0.6.0`
+  (now consumes ChainSource via `source?: ChainSource`). The
+  tx-tracker implementation track lands in a future minor — this
+  version exists to keep the synced version line consistent across
+  the toolkit.
+
 ## [0.5.0] — 2026-05-05
 
 ### Notes

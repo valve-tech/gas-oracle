@@ -269,6 +269,45 @@ packages.
 3. The workflow file (`.github/workflows/release.yml`) deliberately
    has **no** `environment:` block — adding one breaks OIDC matching.
 
+### Workflow fails with `npm error 404 - PUT @valve-tech/<name>` after a repo move/restructure
+
+The error text says "could not be found or you do not have permission",
+but the package exists. This is the trusted-publisher record being
+bound to a *different* GitHub repo than the one currently running the
+workflow — most commonly leftover from before a monorepo restructure.
+
+**Smoking-gun diagnosis (no auth needed):**
+
+```bash
+for pkg in chain-source gas-oracle tx-tracker; do
+  printf "@valve-tech/%-14s " "$pkg"
+  curl -s "https://registry.npmjs.org/@valve-tech/$pkg" \
+    | jq -r '."dist-tags".latest as $v
+             | $v + "  repo=" + .versions[$v].repository.url
+             + "  dir=" + (.versions[$v].repository.directory // "—")'
+done
+```
+
+If any package's last successful publish shows `repository.url` from a
+*different* repo than `evm-toolkit.git` (e.g.
+`git+https://github.com/valve-tech/gas-oracle.git`), that package's
+trusted-publisher record is still bound to the old repo. Fix the
+record per the table above (Repository: `valve-tech/evm-toolkit`,
+Workflow: `release.yml`, Environment: blank), then push the next
+synchronized tag — no need for a manual republish.
+
+**This is what bit v0.3.0** (chain-source published; gas-oracle 404'd
+because its TP record still pointed at the pre-restructure
+`valve-tech/gas-oracle` single-repo). The recovery was a v0.3.1 sync
+release after fixing the TP record — first time around, not multiple
+attempts. Reading the published `repository.url` is enough; don't
+guess at the config from the workflow side.
+
+**Don't conflate with `npm whoami` 401.** A 401 on the local CLI is a
+stale `_authToken` in `~/.npmrc` — completely unrelated to the OIDC
+publish path. The Release workflow doesn't touch your local token,
+and re-logging-in locally won't fix an OIDC 404.
+
 ### Workflow fails at "Verify all packages are at tag version"
 
 One of the `package.json` `version` fields doesn't match the tag's
