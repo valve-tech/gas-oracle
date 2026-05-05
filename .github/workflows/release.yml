@@ -63,6 +63,13 @@ jobs:
           version="${BASH_REMATCH[1]}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      # Enable corepack BEFORE setup-node@v5 so the yarn 4 shim from
+      # the project's `packageManager` field is on PATH by the time
+      # setup-node inspects package.json. See ci.yml for the full
+      # rationale.
+      - name: Enable corepack
+        run: corepack enable
+
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
@@ -72,9 +79,7 @@ jobs:
         run: npm install -g --force npm@11.5.1
 
       - name: Install dependencies
-        run: |
-          corepack enable
-          yarn install --immutable
+        run: yarn install --immutable
 
       # Build first so cross-package type declarations exist on disk
       # (e.g. wallet-adapter's tsc lookup of @valve-tech/viem-errors

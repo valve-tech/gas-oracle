@@ -25,14 +25,21 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Enable corepack BEFORE setup-node@v5 so the yarn 4 shim from
+      # the project's `packageManager` field is on PATH by the time
+      # setup-node inspects package.json. setup-node@v5's
+      # package-manager detection invokes yarn directly during setup;
+      # without corepack enabled first, it falls back to the runner's
+      # global yarn 1 and errors out.
+      - name: Enable corepack
+        run: corepack enable
+
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
 
       - name: Install dependencies
-        run: |
-          corepack enable
-          yarn install --immutable
+        run: yarn install --immutable
 
       # Build first so cross-package type declarations exist on disk
       # (e.g. wallet-adapter's tsc lookup of @valve-tech/viem-errors
