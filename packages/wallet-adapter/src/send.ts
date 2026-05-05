@@ -102,11 +102,13 @@ export async function sendTransactionWithHooks(
     hooks?.onAwaitingSignature?.()
     hash = await wallet.sendTransaction(request)
   } catch (err) {
-    if (isUserRejectionError(err)) {
-      const cause = err instanceof Error ? err : new Error(String(err))
-      throw new WalletRejectedError(cause)
-    }
-    throw err
+    const failure = isUserRejectionError(err)
+      ? new WalletRejectedError(err instanceof Error ? err : new Error(String(err)))
+      : err instanceof Error
+        ? err
+        : new Error(String(err))
+    hooks?.onFailed?.(failure)
+    throw failure
   }
 
   onTransactionHash?.(hash)

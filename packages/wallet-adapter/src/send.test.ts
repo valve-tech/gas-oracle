@@ -127,6 +127,60 @@ describe('sendTransactionWithHooks', () => {
     expect(onAwaitingSignature).toHaveBeenCalledOnce()
   })
 
+  it('fires onFailed with the WalletRejectedError when the wallet rejects', async () => {
+    const onFailed = vi.fn()
+    const wallet: WalletAdapter = {
+      sendTransaction: vi.fn(async () => {
+        throw Object.assign(new Error('User rejected'), { code: 4001 })
+      }),
+    }
+    await expect(
+      sendTransactionWithHooks({ wallet, request: REQUEST, hooks: { onFailed } }),
+    ).rejects.toBeInstanceOf(WalletRejectedError)
+    expect(onFailed).toHaveBeenCalledOnce()
+    const [arg] = onFailed.mock.calls[0]!
+    expect(arg).toBeInstanceOf(WalletRejectedError)
+  })
+
+  it('fires onFailed with the original Error when a non-rejection error is thrown', async () => {
+    const original = new Error('insufficient funds for gas')
+    const onFailed = vi.fn()
+    const wallet: WalletAdapter = {
+      sendTransaction: vi.fn(async () => { throw original }),
+    }
+    await expect(
+      sendTransactionWithHooks({ wallet, request: REQUEST, hooks: { onFailed } }),
+    ).rejects.toBe(original)
+    expect(onFailed).toHaveBeenCalledExactlyOnceWith(original)
+  })
+
+  it('coerces a thrown non-Error non-rejection into an Error before firing onFailed', async () => {
+    const onFailed = vi.fn()
+    const wallet: WalletAdapter = {
+      sendTransaction: vi.fn(async () => { throw 'something exploded' }),
+    }
+    try {
+      await sendTransactionWithHooks({ wallet, request: REQUEST, hooks: { onFailed } })
+      expect.fail('expected throw')
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error)
+      expect((err as Error).message).toBe('something exploded')
+    }
+    expect(onFailed).toHaveBeenCalledOnce()
+    const [arg] = onFailed.mock.calls[0]!
+    expect(arg).toBeInstanceOf(Error)
+  })
+
+  it('does NOT fire onFailed on success', async () => {
+    const onFailed = vi.fn()
+    await sendTransactionWithHooks({
+      wallet: okWallet(),
+      request: REQUEST,
+      hooks: { onFailed },
+    })
+    expect(onFailed).not.toHaveBeenCalled()
+  })
+
   it('coerces a non-Error rejection (string thrown) into an Error cause', async () => {
     const wallet: WalletAdapter = {
       sendTransaction: vi.fn(async () => {

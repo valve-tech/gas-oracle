@@ -8,16 +8,23 @@
  * shared so dapps and tx-state UIs can wire one set of callbacks
  * regardless of which SDK is firing them.
  *
- * Lifecycle the contract describes:
+ * Lifecycle the contract describes (every named hook is optional):
  *   (caller's pre-wallet work)
  *     → onAwaitingSignature
  *     → wallet.sendTransaction
  *     → onTransactionHash(hash)
  *     → waitForTransactionReceipt
- *     → SDK resolves
+ *     → onMined(receipt) | onFailed(error)
+ *     → SDK resolves / rejects
+ *
+ * "Dropped from mempool without inclusion" is intentionally NOT a hook
+ * here. Distinguishing "still propagating" from "permanently dropped"
+ * requires observing the tx across many blocks with a configurable
+ * timeout policy — that's `@valve-tech/tx-tracker`'s job. This contract
+ * covers the one-shot lifecycle of a single send + receipt-await.
  */
 
-import type { Hex } from 'viem'
+import type { Hex, TransactionReceipt } from 'viem'
 
 /**
  * Per-call hooks fired at real boundaries inside an SDK write method.
@@ -55,4 +62,30 @@ export interface WriteHookParams {
    * are complementary — fire both on the same line.
    */
   onTransactionHash?: (hash: Hex) => void
+  /**
+   * Called once with the mined receipt when `receipt.status === 'success'`.
+   * Lets callers flip their tx-state UI to a "confirmed" / terminal
+   * success state. Receives the full receipt so consumers can extract
+   * block number, gas used, decoded events, etc.
+   *
+   * Fired by `awaitReceiptWithHooks` (or by SDK code that performs its
+   * own receipt-await) immediately before the SDK resolves.
+   */
+  onMined?: (receipt: TransactionReceipt) => void
+  /**
+   * Called once with the underlying error on any terminal failure:
+   *   - wallet rejection (`WalletRejectedError`) — fired by
+   *     `sendTransactionWithHooks`
+   *   - on-chain revert (`ContractRevertedError`) — fired by
+   *     `awaitReceiptWithHooks` when `receipt.status === 'reverted'`
+   *   - any other thrown error from the wallet adapter or RPC — fired by
+   *     whichever helper observed the throw, with the original error
+   *     re-thrown after the hook fires.
+   *
+   * Lets callers flip their tx-state UI to a "failed" / terminal error
+   * state. Use `instanceof` against `WalletRejectedError` /
+   * `ContractRevertedError` to discriminate; everything else is a plain
+   * `Error` (network failure, RPC timeout, etc.).
+   */
+  onFailed?: (error: Error) => void
 }

@@ -31,3 +31,10 @@ export {
   WalletRejectedError,
   type SendTransactionWithHooksOptions,
 } from './send.js'
+
+export {
+  awaitReceiptWithHooks,
+  ContractRevertedError,
+  type AwaitReceiptWithHooksOptions,
+  type ReceiptAwaiter,
+} from './receipt.js'
