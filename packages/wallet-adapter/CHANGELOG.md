@@ -16,9 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - `WalletAdapter` interface plus `WalletSendTransactionRequest` and
     `WalletReadContractRequest` request shapes.
   - `WriteHookParams` with `onAwaitingSignature` and per-call
-    `onTransactionHash`.
-  - `WritePhase` / `WritePhaseHookParams` as a forward-looking
-    single-callback shape for SDKs that outgrow two phases.
+    `onTransactionHash` — the single hook contract for the package.
   - `TX_STATUS` lifecycle const, `TrackedTxStatus` type, `TrackedTx`
     shape, `TrackedTxGas`, `TxConfirmedCallback`.
   - `TX_FLOW` extension point (ships empty), `TxFlow = string`.

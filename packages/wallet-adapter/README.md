@@ -135,8 +135,6 @@ function subtitle(tx: TrackedTx): string {
 | `WalletSendTransactionRequest` | type | EIP-1559 send shape — `{ to, data, value?, chainId, maxFeePerGas?, maxPriorityFeePerGas? }` |
 | `WalletReadContractRequest` | type | `{ address, abi, functionName, args?, chainId? }` |
 | `WriteHookParams` | type | `{ onAwaitingSignature?, onTransactionHash? }` |
-| `WritePhase` | type | `'preparing' \| 'awaiting-signature' \| 'broadcasted' \| 'mined'` |
-| `WritePhaseHookParams` | type | `{ onPhase?(phase, ctx?) }` — forward-looking single-callback shape |
 | `sendTransactionWithHooks(opts)` | function | `{ wallet, request, hooks?, onTransactionHash? } → Promise<Hex>`. The runtime helper. |
 | `WalletRejectedError` | class | `Error` subclass with `cause: Error`. Thrown by `sendTransactionWithHooks` on user rejection. |
 | `SendTransactionWithHooksOptions` | type | options shape for the helper |
@@ -147,7 +145,12 @@ function subtitle(tx: TrackedTx): string {
 
 ## Design notes
 
-- **No runtime dependencies.** Adding this package to a dapp is free.
+- **One hook contract.** `WriteHookParams` — two named callbacks,
+  fired by `sendTransactionWithHooks` at the only two boundaries the
+  helper owns (pre-wallet, post-hash). No parallel "phase" enum, no
+  `onPhase` shape, no future-proof speculation. If a third phase
+  becomes genuinely necessary, that's a design conversation we'll
+  have at that point — not a fork shipped pre-emptively.
 - **`TX_FLOW` is intentionally empty.** Every protocol's flow names
   (`fulfillIntent`, `addFunds`, `mintNFT`, etc.) are its own concern.
   Extend the `TxFlow` type via your own union.
@@ -157,9 +160,6 @@ function subtitle(tx: TrackedTx): string {
 - **`id` is stable, `hash` is not.** Registries assign `id` at
   `beginTx` time and attach `hash` later. This lets pre-hash UI render
   before the wallet returns.
-- **`WritePhase` exists as a future migration target.** When an SDK
-  needs more than two lifecycle phases, switch to `onPhase` rather
-  than growing the boolean-named callback surface.
 
 ## License
 

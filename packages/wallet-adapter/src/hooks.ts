@@ -56,29 +56,3 @@ export interface WriteHookParams {
    */
   onTransactionHash?: (hash: Hex) => void
 }
-
-/**
- * Forward-looking single-callback shape for SDKs that need more than two
- * lifecycle phases. Documented here so adopters of `WriteHookParams` who
- * later need a third phase (e.g. simulation, broadcasting, indexer-sync)
- * have a migration target instead of growing the boolean-named callback
- * surface.
- *
- * SDKs MAY accept `onPhase` alongside the named hooks; if both are
- * supplied they should fire each named hook exactly when its
- * corresponding phase fires (don't double-fire from a single transition).
- */
-export type WritePhase =
-  | 'preparing'
-  | 'awaiting-signature'
-  | 'broadcasted'
-  | 'mined'
-
-export interface WritePhaseContext {
-  hash?: Hex
-  receipt?: unknown
-}
-
-export interface WritePhaseHookParams {
-  onPhase?: (phase: WritePhase, context?: WritePhaseContext) => void
-}
