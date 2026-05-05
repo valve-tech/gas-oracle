@@ -34,6 +34,13 @@ jobs:
           corepack enable
           yarn install --immutable
 
+      # Build first so cross-package type declarations exist on disk
+      # (e.g. wallet-adapter's tsc lookup of @valve-tech/viem-errors
+      # resolves to its dist/*.d.ts via the workspace symlink). Build
+      # is workspace-topological so deps build before dependents.
+      - name: Build
+        run: yarn build
+
       - name: Lint
         run: yarn lint
 
@@ -45,6 +52,3 @@ jobs:
 
       - name: Test
         run: yarn test
-
-      - name: Build
-        run: yarn build
