@@ -4,20 +4,27 @@ Framework-agnostic vocabulary for EVM dapp wallet integration. Pure
 types + a few `as const` lifecycle constants — no runtime
 implementation, no opinion about which wallet library you use.
 
-Three concerns under one package so an SDK author and a UI author
-agree on the same surface:
+Four concerns under one package so SDK authors, UI authors, and apps
+all agree on the same surface:
 
 1. **`WalletAdapter`** — the contract an SDK accepts in lieu of
    coupling to wagmi / ethers / viem direct / a smart account.
 2. **`WriteHookParams`** — per-call `onAwaitingSignature` and
    `onTransactionHash` lifecycle callbacks any SDK write method should
    accept and fire.
-3. **`TX_STATUS` / `TrackedTx`** — vocabulary for "this transaction is
+3. **`sendTransactionWithHooks(options)`** — runtime helper. SDKs call
+   this from inside any write method that opens a wallet popup; it
+   fires the hooks at the real boundaries, converts wallet rejections
+   to a typed `WalletRejectedError`, and returns the on-chain hash. So
+   adopting the contract is a one-liner per write method.
+4. **`TX_STATUS` / `TrackedTx`** — vocabulary for "this transaction is
    in flight" UIs (toast strips, inline indicators, history panes) so
    they can sit on top of any tracker without redefining state names.
 
-Pure types and a handful of `as const` objects. No runtime
-dependencies. viem is a peer dependency for the `Hex` type only.
+Pure types, a handful of `as const` objects, and one small async
+helper. The only runtime dependency is `@valve-tech/viem-errors` for
+the rejection-detection check; viem is a peer dependency for the
+`Hex` type and viem-error compatibility.
 
 ## Why
 
@@ -46,25 +53,61 @@ yarn add @valve-tech/wallet-adapter viem
 ### Defining an SDK that accepts any wallet
 
 ```ts
-import type { WalletAdapter, WriteHookParams } from '@valve-tech/wallet-adapter'
+import {
+  sendTransactionWithHooks,
+  WalletRejectedError,
+  type WalletAdapter,
+  type WriteHookParams,
+} from '@valve-tech/wallet-adapter'
 
 export interface MyWriteParams { depositId: bigint; amount: bigint }
 
 export class MyClient {
-  constructor(private wallet: WalletAdapter) {}
+  constructor(
+    private wallet: WalletAdapter,
+    private chainId: number,
+    private escrow: `0x${string}`,
+    /** Optional global / analytics channel — fires alongside the per-call hook. */
+    private onTransactionHash?: (hash: `0x${string}`) => void,
+  ) {}
 
   async deposit(params: MyWriteParams & WriteHookParams) {
-    params.onAwaitingSignature?.()
-    const hash = await this.wallet.sendTransaction({
-      to: this.escrow,
-      data: this.encodeDeposit(params),
-      chainId: this.chainId,
-    })
-    params.onTransactionHash?.(hash)
-    return hash
+    try {
+      const hash = await sendTransactionWithHooks({
+        wallet: this.wallet,
+        request: {
+          to: this.escrow,
+          data: this.encodeDeposit(params),
+          chainId: this.chainId,
+        },
+        hooks: params,
+        onTransactionHash: this.onTransactionHash,
+      })
+      // ...await receipt, return result, etc.
+      return { hash }
+    } catch (err) {
+      if (err instanceof WalletRejectedError) {
+        throw new MySdkError('WALLET_REJECTED', err.message, err.cause)
+      }
+      throw new MySdkError('CONTRACT_ERROR', (err as Error).message, err as Error)
+    }
   }
 }
 ```
+
+`sendTransactionWithHooks` guarantees:
+
+- `onAwaitingSignature` fires **once**, **immediately before**
+  `wallet.sendTransaction`.
+- `onTransactionHash` (per-call **and** global) fires **once each**,
+  **after** `sendTransaction` resolves and **before** any receipt-await.
+- Wallet rejections — detected via the three-signal check in
+  `@valve-tech/viem-errors` (EIP-1193 `code === 4001`, viem class name,
+  message regex, anywhere in the cause chain) — are thrown as
+  `WalletRejectedError` so consumers can `instanceof`-check and
+  rewrap to their own error vocabulary.
+- Non-rejection errors are re-thrown unchanged so the SDK keeps
+  control of its error mapping.
 
 ### A tx-flight UI built on `TX_STATUS`
 
@@ -94,6 +137,9 @@ function subtitle(tx: TrackedTx): string {
 | `WriteHookParams` | type | `{ onAwaitingSignature?, onTransactionHash? }` |
 | `WritePhase` | type | `'preparing' \| 'awaiting-signature' \| 'broadcasted' \| 'mined'` |
 | `WritePhaseHookParams` | type | `{ onPhase?(phase, ctx?) }` — forward-looking single-callback shape |
+| `sendTransactionWithHooks(opts)` | function | `{ wallet, request, hooks?, onTransactionHash? } → Promise<Hex>`. The runtime helper. |
+| `WalletRejectedError` | class | `Error` subclass with `cause: Error`. Thrown by `sendTransactionWithHooks` on user rejection. |
+| `SendTransactionWithHooksOptions` | type | options shape for the helper |
 | `TX_STATUS` | const | lifecycle states |
 | `TX_FLOW` | const | empty by design — protocols extend |
 | `TrackedTx` | type | `{ id, hash?, chainId, flow, submittedAt, ... status, notes? }` |

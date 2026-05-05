@@ -27,3 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Unit tests covering the runtime constants and type-level shape
   guarantees (status-value uniqueness, phase literal union, hook
   parameter typing, `TrackedTx` pre-hash and post-hash construction).
+- `sendTransactionWithHooks(options)` runtime helper — collapses the
+  whole "fire `onAwaitingSignature`, call `wallet.sendTransaction`,
+  detect rejection, fire `onTransactionHash` (per-call + global)" block
+  into one call so SDKs can adopt the lifecycle contract per write
+  method in a one-liner.
+- `WalletRejectedError` — typed `Error` subclass thrown by the helper
+  on a user rejection; preserves the original error as `cause` so SDKs
+  can rewrap to their own typed error vocabulary.
+- Runtime dependency on `@valve-tech/viem-errors` for the
+  three-signal rejection detection (EIP-1193 `code === 4001`, viem
+  class name, message regex — anywhere in the cause chain).

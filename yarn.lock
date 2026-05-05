@@ -653,7 +653,7 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@valve-tech/viem-errors@workspace:packages/viem-errors":
+"@valve-tech/viem-errors@workspace:^, @valve-tech/viem-errors@workspace:packages/viem-errors":
   version: 0.0.0-use.local
   resolution: "@valve-tech/viem-errors@workspace:packages/viem-errors"
   peerDependencies:
@@ -664,6 +664,8 @@ __metadata:
 "@valve-tech/wallet-adapter@workspace:packages/wallet-adapter":
   version: 0.0.0-use.local
   resolution: "@valve-tech/wallet-adapter@workspace:packages/wallet-adapter"
+  dependencies:
+    "@valve-tech/viem-errors": "workspace:^"
   peerDependencies:
     viem: ^2.0.0
   languageName: unknown

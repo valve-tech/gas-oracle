@@ -30,3 +30,9 @@ export type {
   TxFlow,
   TxConfirmedCallback,
 } from './tx-status.js'
+
+export {
+  sendTransactionWithHooks,
+  WalletRejectedError,
+  type SendTransactionWithHooksOptions,
+} from './send.js'

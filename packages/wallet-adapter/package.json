@@ -45,6 +45,9 @@
     "test:coverage": "vitest run --coverage",
     "prepare": "yarn build"
   },
+  "dependencies": {
+    "@valve-tech/viem-errors": "workspace:^"
+  },
   "peerDependencies": {
     "viem": "^2.0.0"
   }
