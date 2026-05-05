@@ -241,9 +241,7 @@ describe('reducePollInputs', () => {
 /*  createGasOracle (lifecycle)                                               */
 /* -------------------------------------------------------------------------- */
 
-interface FakeClient extends PublicClient {
-  // not real, but matches what oracle calls
-}
+type FakeClient = PublicClient
 
 const stubClient = (
   responder: (method: string) => unknown = () => null,
