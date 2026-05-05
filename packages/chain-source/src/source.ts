@@ -180,6 +180,14 @@ export const createChainSource = (
   let timer: ReturnType<typeof setInterval> | null = null
   let started = false
   let cachedCapabilities: Capabilities = PROBING_DEFAULT
+  // Dedup key for the block stream — by hash, not number, so that a
+  // same-height reorg (different hash, same number) still surfaces as
+  // a fresh observation. Reset on stop() so a paused-then-resumed
+  // source emits a current snapshot to its consumers rather than
+  // waiting for the next chain block. Typed `string | undefined` to
+  // match `BlockResult.hash`'s optionality (real upstream blocks
+  // always carry a hash; the type stays permissive for test fixtures).
+  let lastEmittedBlockHash: string | undefined
 
   const errSink = (method: string) =>
     options.onError ? (err: unknown) => options.onError!(method, err) : undefined
@@ -205,9 +213,13 @@ export const createChainSource = (
         : Promise.resolve(null),
     ])
 
-    if (block) {
+    if (block && block.hash !== lastEmittedBlockHash) {
+      lastEmittedBlockHash = block.hash
       blockSubs.emit(block)
     }
+    // Mempool is intentionally not deduped — txs come and go between
+    // blocks even on a static head, so every successful snapshot is
+    // fresh data. Only the block stream dedups.
     if (txPool && fetchMempool) {
       mempoolSubs.emit(normalizeMempool(txPool))
     }
@@ -234,7 +246,11 @@ export const createChainSource = (
       started = false
       // Subscriber registry is intentionally preserved across stop —
       // a start/stop/start pattern keeps existing subscriptions
-      // alive, matching the gas-oracle convention.
+      // alive, matching the gas-oracle convention. Block-dedup state
+      // IS reset though: a consumer that paused and resumed should
+      // get a current snapshot on first re-tick rather than wait for
+      // the next chain block.
+      lastEmittedBlockHash = undefined
     },
 
     pollOnce: () => tick(),

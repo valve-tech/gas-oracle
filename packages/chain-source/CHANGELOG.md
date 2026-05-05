@@ -44,6 +44,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   for deterministic test setups that don't want to engage fake
   timers.
 
+### Changed
+
+- **`subscribeBlocks` now dedups by `block.hash`.** Previously, every
+  successful tick fanned out to block subscribers regardless of
+  whether the head had advanced; on a static head that meant an emit
+  every `pollIntervalMs`. The stream now only emits when the observed
+  block hash differs from the last one delivered. Hash-based (not
+  number-based) so a same-height reorg surfaces as a fresh
+  observation. Dedup state resets on `stop()` — a paused-then-resumed
+  source emits a current snapshot to its consumers on first re-tick
+  rather than waiting for the next chain block. `subscribeMempool` is
+  intentionally not deduped — txs come and go between blocks even on
+  a static head, so every successful snapshot remains fresh data.
+
 ### Notes
 
 - WebSocket push subscriptions (`eth_subscribe('newHeads')` /

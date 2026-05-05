@@ -132,6 +132,116 @@ test('unsubscribeBlocks stops further delivery', async () => {
   expect(cb).toHaveBeenCalledTimes(1)
 })
 
+test('subscribeBlocks dedups: same block.hash across two ticks emits once', async () => {
+  const block = sampleBlock('0x10')
+  const { client } = fakeClient({
+    responses: { eth_getBlockByNumber: () => block },
+  })
+  const source = createChainSource({ client })
+  const cb = vi.fn()
+  source.subscribeBlocks(cb)
+
+  await source.pollOnce()
+  await source.pollOnce()
+
+  // Same block hash on both ticks — emit only once. A consumer
+  // (gas-oracle, tx-tracker) receives "new block observed" events, not
+  // "we polled again" events.
+  expect(cb).toHaveBeenCalledTimes(1)
+  expect(cb).toHaveBeenCalledWith(block)
+})
+
+test('subscribeBlocks re-emits when block.hash changes', async () => {
+  const blockA = { ...sampleBlock('0x10'), hash: '0xaaa' }
+  const blockB = { ...sampleBlock('0x11'), hash: '0xbbb' }
+  let i = 0
+  const { client } = fakeClient({
+    responses: {
+      eth_getBlockByNumber: () => (i++ === 0 ? blockA : blockB),
+    },
+  })
+  const source = createChainSource({ client })
+  const cb = vi.fn()
+  source.subscribeBlocks(cb)
+
+  await source.pollOnce()
+  await source.pollOnce()
+
+  expect(cb).toHaveBeenCalledTimes(2)
+  expect(cb).toHaveBeenNthCalledWith(1, blockA)
+  expect(cb).toHaveBeenNthCalledWith(2, blockB)
+})
+
+test('subscribeBlocks re-emits on a same-height reorg (different hash)', async () => {
+  const original = { ...sampleBlock('0x10'), hash: '0xorig' }
+  const reorged  = { ...sampleBlock('0x10'), hash: '0xreorg' }
+  let i = 0
+  const { client } = fakeClient({
+    responses: {
+      eth_getBlockByNumber: () => (i++ === 0 ? original : reorged),
+    },
+  })
+  const source = createChainSource({ client })
+  const cb = vi.fn()
+  source.subscribeBlocks(cb)
+
+  await source.pollOnce()
+  await source.pollOnce()
+
+  // Same block.number, different block.hash — that's a reorg. Dedup
+  // by number alone would silently swallow it. Hash-based dedup
+  // surfaces it as a new observation.
+  expect(cb).toHaveBeenCalledTimes(2)
+  expect(cb).toHaveBeenNthCalledWith(1, original)
+  expect(cb).toHaveBeenNthCalledWith(2, reorged)
+})
+
+test('subscribeMempool does NOT dedup — every successful snapshot fires', async () => {
+  const block = sampleBlock('0x10')
+  const txPool: TxPoolContent = {
+    pending: { '0xABC': { '0x5': { hash: '0xdef' } } },
+    queued: {},
+  }
+  const { client } = fakeClient({
+    responses: {
+      eth_getBlockByNumber: () => block,
+      txpool_content: () => txPool,
+    },
+  })
+  const source = createChainSource({ client })
+  const cb = vi.fn()
+  source.subscribeMempool(cb)
+
+  await source.pollOnce()
+  await source.pollOnce()
+
+  // Mempool changes between blocks even when the head doesn't move
+  // (txs come and go). Every successful txpool_content fans out — only
+  // the block stream is deduped.
+  expect(cb).toHaveBeenCalledTimes(2)
+})
+
+test('dedup state resets on stop — first tick after restart re-emits the same block', async () => {
+  const block = sampleBlock('0x10')
+  const { client } = fakeClient({
+    responses: { eth_getBlockByNumber: () => block },
+  })
+  const source = createChainSource({ client })
+  const cb = vi.fn()
+  source.subscribeBlocks(cb)
+
+  await source.pollOnce()
+  expect(cb).toHaveBeenCalledTimes(1)
+
+  source.stop()
+  // After stop, lastEmitted state is cleared. The next pollOnce sees
+  // the same hash but treats it as a fresh observation — a consumer
+  // that paused and resumed should receive a current snapshot rather
+  // than wait for the next chain block.
+  await source.pollOnce()
+  expect(cb).toHaveBeenCalledTimes(2)
+})
+
 test('mempool subscribers do not fire when txpool_content is gated', async () => {
   const block = sampleBlock('0x10')
   const { client } = fakeClient({
