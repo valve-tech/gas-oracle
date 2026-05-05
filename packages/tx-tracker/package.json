@@ -43,6 +43,7 @@
     "typecheck": "tsc -p . --noEmit",
     "lint": "eslint src",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "prepare": "yarn build"
   },
   "peerDependencies": {

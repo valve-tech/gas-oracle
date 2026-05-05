@@ -22,12 +22,14 @@
     "typecheck": "yarn workspaces foreach --all --exclude @valve-tech/evm-toolkit run typecheck",
     "typecheck:examples": "yarn workspace @valve-tech/gas-oracle run typecheck:examples",
     "lint": "yarn workspaces foreach --all --exclude @valve-tech/evm-toolkit run lint",
-    "test": "yarn workspaces foreach --all --exclude @valve-tech/evm-toolkit run test"
+    "test": "yarn workspaces foreach --all --exclude @valve-tech/evm-toolkit run test",
+    "test:coverage": "yarn workspaces foreach --all --exclude @valve-tech/evm-toolkit run test:coverage"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@typescript-eslint/eslint-plugin": "^8.59.1",
     "@typescript-eslint/parser": "^8.59.1",
+    "@vitest/coverage-v8": "~4.1.5",
     "eslint": "^10.3.0",
     "typescript": "^6.0.2",
     "typescript-eslint": "^8.59.1",
