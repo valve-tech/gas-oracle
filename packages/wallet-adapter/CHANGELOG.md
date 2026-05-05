@@ -6,6 +6,16 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] — 2026-05-05
+
+### Notes
+
+- Synchronized release — no changes to this package. Bumped in
+  lockstep with `@valve-tech/chain-source@0.6.0` (block-stream
+  dedup + head-probe gating in the source tick) and
+  `@valve-tech/gas-oracle@0.6.0` (now consumes ChainSource via
+  `source?: ChainSource`).
+
 ## [0.5.0] — 2026-05-05
 
 ### Changed — BREAKING
