@@ -16,7 +16,6 @@ const makeClient = (
     if (result instanceof Error) throw result
     return result
   })
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return { client: { request } as unknown as PublicClient, calls }
 }
 

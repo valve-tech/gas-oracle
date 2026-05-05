@@ -43,6 +43,7 @@ import { Subscriptions } from './subscriptions.js'
 import {
   fetchBlock,
   fetchFeeHistory,
+  fetchHeadBlockNumber,
   fetchReceipt,
   fetchTransaction,
   fetchTxPool,
@@ -180,6 +181,21 @@ export const createChainSource = (
   let timer: ReturnType<typeof setInterval> | null = null
   let started = false
   let cachedCapabilities: Capabilities = PROBING_DEFAULT
+  // Dedup key for the block stream — by hash, not number, so that a
+  // same-height reorg (different hash, same number) still surfaces as
+  // a fresh observation. Reset on stop() so a paused-then-resumed
+  // source emits a current snapshot to its consumers rather than
+  // waiting for the next chain block. Typed `string | undefined` to
+  // match `BlockResult.hash`'s optionality (real upstream blocks
+  // always carry a hash; the type stays permissive for test fixtures).
+  let lastEmittedBlockHash: string | undefined
+  // Head-probe gate state — last `eth_blockNumber`-confirmed head we
+  // actually fetched a full block for. Lets the tick skip
+  // `eth_getBlockByNumber('latest', true)` (1–5MB on busy chains)
+  // when the head hasn't moved. Same lifecycle as the dedup hash —
+  // reset on stop() so a paused-then-resumed source defensively
+  // re-fetches even at the same height.
+  let lastSeenBlockNumber: bigint | undefined
 
   const errSink = (method: string) =>
     options.onError ? (err: unknown) => options.onError!(method, err) : undefined
@@ -192,22 +208,51 @@ export const createChainSource = (
     cachedCapabilities = caps
   })
 
-  // One poll cycle: fetch latest block + (optionally) mempool, then
-  // fan out to subscribers. Only emits when the underlying RPC
-  // succeeded — a `null` block means the cycle is a no-op and a
-  // `null` txpool means mempool subscribers don't fire (but block
-  // subscribers still do).
+  // One poll cycle. Cheap `eth_blockNumber` probe + (optionally)
+  // mempool fetch in parallel; if the probe shows the head has
+  // advanced (or the probe failed and we're falling through
+  // defensively), follow up with the expensive full-block fetch.
+  // Mempool emits every successful cycle; blocks emit only when the
+  // observed hash changes.
   const tick = async (): Promise<void> => {
-    const [block, txPool] = await Promise.all([
-      fetchBlock(options.client, 'latest', errSink('eth_getBlockByNumber')),
+    const [head, txPool] = await Promise.all([
+      fetchHeadBlockNumber(options.client, errSink('eth_blockNumber')),
       fetchMempool
         ? fetchTxPool(options.client, errSink('txpool_content'))
         : Promise.resolve(null),
     ])
 
+    // Head-probe gate: skip the full-block fetch when the probe says
+    // the head hasn't moved since we last observed it. A null probe
+    // (RPC method gated, transport error) falls through to fetch —
+    // we'd rather pay one extra block fetch than block on a flaky
+    // upstream that can't even report `eth_blockNumber`.
+    const headChanged =
+      head === null ||
+      lastSeenBlockNumber === undefined ||
+      head !== lastSeenBlockNumber
+    const block = headChanged
+      ? await fetchBlock(options.client, 'latest', errSink('eth_getBlockByNumber'))
+      : null
+
     if (block) {
-      blockSubs.emit(block)
+      // Update the gate state from the actually-fetched block, not
+      // from the probe's number — keeps the gate consistent with
+      // what consumers observed.
+      try {
+        lastSeenBlockNumber = BigInt(block.number)
+      } catch {
+        // Block number didn't decode — leave gate state untouched so
+        // we re-fetch on the next tick rather than persist garbage.
+      }
+      if (block.hash !== lastEmittedBlockHash) {
+        lastEmittedBlockHash = block.hash
+        blockSubs.emit(block)
+      }
     }
+    // Mempool is intentionally not deduped — txs come and go between
+    // blocks even on a static head, so every successful snapshot is
+    // fresh data. Only the block stream dedups.
     if (txPool && fetchMempool) {
       mempoolSubs.emit(normalizeMempool(txPool))
     }
@@ -234,7 +279,14 @@ export const createChainSource = (
       started = false
       // Subscriber registry is intentionally preserved across stop —
       // a start/stop/start pattern keeps existing subscriptions
-      // alive, matching the gas-oracle convention.
+      // alive, matching the gas-oracle convention. Block-dedup +
+      // head-probe-gate state ARE reset though: a consumer that
+      // paused and resumed should get a current snapshot on first
+      // re-tick rather than wait for the next chain block, and the
+      // gate must defensively re-fetch in case the chain advanced
+      // (or reorged) during the pause.
+      lastEmittedBlockHash = undefined
+      lastSeenBlockNumber = undefined
     },
 
     pollOnce: () => tick(),

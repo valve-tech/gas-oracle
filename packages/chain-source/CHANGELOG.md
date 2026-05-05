@@ -44,6 +44,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   for deterministic test setups that don't want to engage fake
   timers.
 
+### Changed
+
+- **`subscribeBlocks` now dedups by `block.hash`.** Previously, every
+  successful tick fanned out to block subscribers regardless of
+  whether the head had advanced; on a static head that meant an emit
+  every `pollIntervalMs`. The stream now only emits when the observed
+  block hash differs from the last one delivered. Hash-based (not
+  number-based) so a same-height reorg surfaces as a fresh
+  observation. Dedup state resets on `stop()` — a paused-then-resumed
+  source emits a current snapshot to its consumers on first re-tick
+  rather than waiting for the next chain block. `subscribeMempool` is
+  intentionally not deduped — txs come and go between blocks even on
+  a static head, so every successful snapshot remains fresh data.
+- **The poll cycle now head-probe-gates the full block fetch.** Each
+  tick runs a cheap `eth_blockNumber` probe in parallel with the
+  mempool fetch; only when the probe shows the head has advanced (or
+  the probe failed and we're falling through defensively) does the
+  cycle issue the expensive `eth_getBlockByNumber('latest', true)`
+  (1–5MB on busy chains). On a static head with the default 10 s
+  interval, the per-tick RPC weight drops from "full block + mempool
+  + probe" to "probe + mempool". Mempool fetch still runs every
+  cycle. Closes the efficiency-regression risk for the upcoming
+  gas-oracle migration to consume `ChainSource` (the soon-to-be-
+  deprecated `gas-oracle.blockGatedPolling` option had this behavior
+  in v0.5.0; it now lives at the source layer where every consumer
+  benefits).
+
 ### Notes
 
 - WebSocket push subscriptions (`eth_subscribe('newHeads')` /
