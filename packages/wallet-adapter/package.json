@@ -1,0 +1,51 @@
+{
+  "name": "@valve-tech/wallet-adapter",
+  "version": "0.3.1",
+  "description": "Framework-agnostic vocabulary for EVM dapp wallet integration: WalletAdapter interface (sign + send), WriteHookParams lifecycle hooks (onAwaitingSignature, per-call onTransactionHash), and TX_STATUS / TX_FLOW / TrackedTx for tx-state UI. Pure types, no runtime dependencies. Lets SDKs and dapps share one contract instead of each redefining it. Part of the valve-tech/evm-toolkit synchronized release line.",
+  "license": "MIT",
+  "homepage": "https://github.com/valve-tech/evm-toolkit/tree/main/packages/wallet-adapter#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/valve-tech/evm-toolkit.git",
+    "directory": "packages/wallet-adapter"
+  },
+  "bugs": {
+    "url": "https://github.com/valve-tech/evm-toolkit/issues"
+  },
+  "keywords": [
+    "ethereum",
+    "evm",
+    "viem",
+    "wagmi",
+    "wallet",
+    "wallet-adapter",
+    "tx-status",
+    "lifecycle-hooks"
+  ],
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p .",
+    "typecheck": "tsc -p . --noEmit",
+    "lint": "eslint src",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "prepare": "yarn build"
+  },
+  "peerDependencies": {
+    "viem": "^2.0.0"
+  }
+}
