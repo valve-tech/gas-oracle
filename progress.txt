@@ -1,0 +1,212 @@
+# evm-toolkit — progress log
+
+Last checkpoint: 2026-05-04 (afternoon — chain-source core landed as PR)
+
+## Repo identity
+
+- GitHub: `valve-tech/evm-toolkit`
+- Local clone: `~/Documents/3commascapital/gitlab/pulsechainorg/pulsechain/gas-oracle/`
+  (folder still named `gas-oracle/` locally; rename when convenient)
+- Default branch: `main`
+- Latest commit on `main`: `aa9de59 chore(release): v0.3.1 — re-sync after partial v0.3.0 publish (#11)`
+- Open PRs:
+  - **#12 — `feat(chain-source): implement v0.3.x ChainSource core`** (this session's work)
+    - Branch: `feat/chain-source-core`
+    - State: OPEN, mergeable, CI test job pending at checkpoint time
+    - Files: 15 changed (+1968 / -33)
+    - URL: https://github.com/valve-tech/evm-toolkit/pull/12
+- Stashed locally (NOT in any PR):
+  - `WIP: releasing-skill diagnostic addition (prior session, unrelated to chain-source)`
+  - 39-line addition to `.claude/skills/releasing-evm-toolkit/SKILL.md` documenting
+    the npm-trusted-publisher 404 incident from v0.3.0. Land separately as a
+    docs-only PR when convenient. `git stash list | head -1` to confirm.
+
+## Published state on npm
+
+All three packages still at **`0.3.1`** (no version bumps yet from this session).
+
+  @valve-tech/chain-source  0.3.1   (stub on npm; PR #12 implements the real package locally — release after merge)
+  @valve-tech/gas-oracle    0.3.1
+  @valve-tech/tx-tracker    0.3.1
+
+## What this session accomplished
+
+- **PR #12 — chain-source v0.3.x core implementation.** Standalone PR;
+  no changes to gas-oracle or tx-tracker. 15 files; 67 new tests.
+  - `packages/chain-source/src/types.ts` — wire-format types (`RawTx`,
+    `BlockResult`, `TxPoolContent`, `FeeHistoryResult`,
+    `NormalizedMempool`, `PollOptions`, `Capabilities`, `EventSource`).
+  - `packages/chain-source/src/subscriptions.ts` — hand-rolled typed
+    pub/sub primitive (browser/mobile-safe, no Node `events` dep).
+    Per-subscriber throws swallowed; emit fans out to a snapshot
+    taken at start-of-call. (10 tests.)
+  - `packages/chain-source/src/transport.ts` — `safeRequest`-returns-null
+    wrappers around `eth_blockNumber`, `eth_getBlockByNumber`,
+    `eth_feeHistory`, `txpool_content`, `eth_getTransactionReceipt`,
+    `eth_getTransactionByHash`. Plus `zeroHash` constant. (15 tests.)
+  - `packages/chain-source/src/mempool.ts` — `normalizeMempool`
+    (lowercase address keys + decimal nonce keys, idempotent). Same
+    behavior as the existing gas-oracle copy; will collapse in step 2
+    when gas-oracle migrates. (9 tests.)
+  - `packages/chain-source/src/capabilities.ts` — `probeCapabilities`.
+    Structural shape inspection (`typeof transport.subscribe ===
+    'function'`) rather than live `eth_subscribe`. Probes
+    `txpool_content` + zero-hash receipt for definitive states.
+    (10 tests.)
+  - `packages/chain-source/src/source.ts` — `createChainSource` factory.
+    Lifecycle (`start` / `stop` idempotent), multi-subscriber fan-out
+    for blocks + mempool, on-demand passthroughs (`getBlock`,
+    `getFeeHistory`, `getMempoolSnapshot`, `getReceipt`,
+    `getTransaction`), cached `capabilities()` accessor, eager probe at
+    construction with `ready()` for awaiting it, additive `pollOnce()`.
+    (16 tests.)
+  - `packages/chain-source/src/index.ts` — public re-exports.
+  - `packages/chain-source/README.md` rewritten (was stub-language).
+  - `packages/chain-source/CHANGELOG.md` — `[Unreleased]` section
+    added documenting the surface.
+
+- **No version bumps.** This is a feature PR; the release PR (synced
+  bump for whatever number comes next — v0.3.2 or v0.4.0) lands after
+  the implementation track is complete.
+
+## Key architectural decisions this session
+
+- **chain-source is fully self-contained at this stage.** Has its
+  own copies of `safeRequest`, `BlockResult`, `RawTx`, etc. — types
+  are structurally identical to the gas-oracle ones so step 2's
+  migration is a simple import swap, not a type-shape change.
+  Splitting this way keeps each PR reviewable and avoids breaking
+  gas-oracle while chain-source is half-built.
+
+- **Capability probe is structural, not live.** Inspects
+  `typeof transport.subscribe === 'function'` rather than issuing a
+  real `eth_subscribe`. Trade-off: a transport that exposes
+  `subscribe()` but whose upstream rejects the channel will report
+  `'subscription'` at construction and discover the truth lazily.
+  Mid-session capability degradation surfaces via `signal-degraded`
+  events on downstream consumers (tx-tracker) — chain-source itself
+  emits no editorial events.
+
+- **Eager probe at construction (not at start).** The probe runs
+  immediately on `createChainSource()`, fire-and-forget. By the time
+  any consumer reaches `start()` and the first tick fires, the probe
+  has typically landed. Brief window where `capabilities()` returns
+  conservative defaults; `await source.ready()` guarantees real values.
+
+- **Two methods added beyond spec:** `pollOnce()` (out-of-band cycle
+  driver — useful for serverless flows and deterministic test setup
+  without fake timers) and `ready()` (awaits the eager probe). Both
+  additive; the spec'd interface is fully implemented.
+
+- **WS push (`eth_subscribe`) deliberately deferred.** The capability
+  matrix discloses structural support, but the source always uses
+  its interval poll cycle in this revision. Future PR adds the push
+  path without changing consumer-facing surface.
+
+- **`subscribeMempool` does not fire on `null` txpool.** When the
+  upstream gates `txpool_content` for a tick, mempool subscribers do
+  not receive an "empty mempool" event — that would be misleading.
+  Block subscribers still fire (they're independent paths).
+
+## Specific next steps (per docs/tx-tracker-spec.md)
+
+The next implementation work, ordered:
+
+1. **Step 2: gas-oracle migration to consume ChainSource** — additive
+   PR, ~150 LOC of net change in gas-oracle.
+   - Add `@valve-tech/chain-source` as a dependency.
+   - Add `source?: ChainSource` to `CreateGasOracleOptions`.
+   - Validation: exactly one of `source` / `client` must be provided.
+   - When `client` is provided (v0.2.x backward-compat), construct a
+     private `ChainSource` internally and use it.
+   - When `source` is provided, subscribe to source.subscribeBlocks
+     and source.subscribeMempool; fetch fee history via
+     source.getFeeHistory on each block event.
+   - viem-actions and viem-transport sub-exports get the same
+     internal refactor.
+   - Drop the local `safeRequest` / `fetchOracleInputs` /
+     `fetchHeadBlockNumber` once chain-source is the source of truth.
+     Keep `BlockResult` / `RawTx` etc. type re-exports for backward
+     compat.
+   - Drop the local `normalizeMempool` (it's in chain-source now).
+
+2. **Step 3: tx-tracker core** — biggest piece. Per spec §5.2, §6,
+   §9, §11, §12. ~900 LOC across `tracker.ts`, `events.ts`,
+   `store.ts`, `reorg.ts`, `selectors.ts`. New tests for state
+   machine, event taxonomy, store retention, reorg detector, bulk
+   subscriptions.
+
+3. **Step 4: Capability-matrix matrix tests.** Hand-built block
+   sequence with one tracked hash; run the tracker once with all
+   capabilities, once with WS only, once with HTTP-poll only, once
+   with receipt-poll only. Assert identical observed-state. Pins
+   "no silent downgrade."
+
+4. **Step 5: examples/07-tx-tracker.ts** etc. Runnable end-to-end.
+
+5. **Step 6: Update consumer skill** at
+   `packages/gas-oracle/skills/gas-oracle-integration/SKILL.md`
+   with a tx-tracking section. Add a similar consumer skill for
+   chain-source if useful.
+
+Each step lands as its own PR. After all steps merge, a synced
+release PR bumps every package to v0.3.2 (or v0.4.0 if any breaking
+change accumulated).
+
+## Repo health snapshot at this checkpoint
+
+- `yarn typecheck` — silent
+- `yarn typecheck:examples` — silent
+- `yarn lint` — clean except 2 pre-existing warnings in
+  `packages/gas-oracle/src/*.test.ts` (unchanged from baseline)
+- `yarn test` — **250 / 250** passing
+  - chain-source: 67 / 67
+  - gas-oracle: 182 / 182 (unchanged)
+  - tx-tracker: 1 / 1 (unchanged)
+- `yarn build` — clean across all 3 packages
+- Open PRs: #12 (this session)
+- Stash entries: 1 (releasing-skill diagnostic addition, prior session)
+
+## Gotchas / notes
+
+- **PR #12 was opened with valvecitydev account** (admin on
+  valve-tech repos). Verify with `gh auth status` before any
+  follow-up PR ops; same machine has 4 other GH accounts in the
+  keyring with READ-only access on this org.
+
+- **Local `dist/` is gitignored** but rebuilds touch
+  `tsconfig.tsbuildinfo` files in each package's root — also
+  gitignored. Don't be alarmed when they show up after `yarn build`.
+
+- **Vitest binary is at root `node_modules/.bin/vitest`** (hoisted),
+  not in per-package `node_modules`. The package-level `yarn test`
+  works because yarn workspaces resolve it; running vitest manually
+  needs `node node_modules/.bin/vitest run --root packages/<pkg>`.
+
+- **vi.fn typing**: `vi.fn<(method: string, err: unknown) => void>()`
+  is required to keep destructuring `[method]` typed in test
+  assertions; the LSP flagged it once before I added the explicit
+  generic.
+
+## File map quick reference
+
+```
+evm-toolkit/                    repo root
+├── packages/
+│   ├── chain-source/           @valve-tech/chain-source — REAL CODE NOW (was stub)
+│   │   └── src/
+│   │       ├── index.ts             public re-exports
+│   │       ├── types.ts             wire-format types
+│   │       ├── subscriptions.ts     hand-rolled pub/sub
+│   │       ├── transport.ts         RPC fan-out
+│   │       ├── mempool.ts           normalizeMempool
+│   │       ├── capabilities.ts      probeCapabilities
+│   │       └── source.ts            createChainSource factory
+│   ├── gas-oracle/             @valve-tech/gas-oracle  (still v0.3.1, untouched this session)
+│   └── tx-tracker/             @valve-tech/tx-tracker  (still stub at 0.3.1)
+├── docs/
+│   └── tx-tracker-spec.md      design contract — chain-source §3 is now built
+├── .claude/skills/             project-local AI skills
+├── .github/workflows/          ci.yml + release.yml
+└── README.md
+```

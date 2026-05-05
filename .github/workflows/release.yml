@@ -123,6 +123,12 @@ jobs:
       - name: Publish @valve-tech/chain-source
         run: cd packages/chain-source && npm publish --access public --provenance
 
+      - name: Publish @valve-tech/viem-errors
+        run: cd packages/viem-errors && npm publish --access public --provenance
+
+      - name: Publish @valve-tech/wallet-adapter
+        run: cd packages/wallet-adapter && npm publish --access public --provenance
+
       - name: Publish @valve-tech/gas-oracle
         run: cd packages/gas-oracle && npm publish --access public --provenance
 

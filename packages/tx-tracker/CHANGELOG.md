@@ -6,6 +6,19 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] — 2026-05-04
+
+### Notes
+
+- Synchronized release — no changes to this package. Bumped in
+  lockstep with the rest of the toolkit, which adds two new packages:
+  `@valve-tech/viem-errors` (cause-chain error utilities) and
+  `@valve-tech/wallet-adapter` (wallet contract + lifecycle hooks).
+  The contract additions in `wallet-adapter` (notably `onDropped` /
+  `onReplaced` hooks plus the `WritePhase` discriminated union) are
+  designed to be the consumer-facing surface that this tracker fires
+  against once its v0.3.x implementation lands.
+
 ## [0.3.1] — 2026-05-04
 
 > **First fully-synchronized release.** Part of the

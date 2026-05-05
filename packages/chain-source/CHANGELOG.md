@@ -6,6 +6,17 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] — 2026-05-04
+
+### Notes
+
+- Synchronized release — no changes to this package. Bumped in
+  lockstep with the rest of the toolkit, which adds two new packages
+  (`@valve-tech/viem-errors` and `@valve-tech/wallet-adapter`). The
+  v0.3.x ChainSource implementation track is unaffected by this
+  release and remains in flight under PR #12; it will land in a
+  subsequent version.
+
 ## [0.3.1] — 2026-05-04
 
 > **First fully-synchronized release.** v0.3.0 was a partial publish:

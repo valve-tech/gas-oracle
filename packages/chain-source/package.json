@@ -1,6 +1,6 @@
 {
   "name": "@valve-tech/chain-source",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Canonical EVM chain-observation primitive: a unified push-or-poll source for new blocks, mempool snapshots, on-demand receipt + tx lookups, and capability disclosure (HTTP / WS / per-method gating). Used as the shared foundation by @valve-tech/gas-oracle and @valve-tech/tx-tracker; consumable directly by anyone building their own derived view on chain state. viem-native. Part of the valve-tech/evm-toolkit synchronized release line — implementation lands in subsequent 0.3.x releases per docs/tx-tracker-spec.md.",
   "license": "MIT",
   "homepage": "https://github.com/valve-tech/evm-toolkit/tree/main/packages/chain-source#readme",
