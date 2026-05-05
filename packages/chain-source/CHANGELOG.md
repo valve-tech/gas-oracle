@@ -6,6 +6,57 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`createChainSource({ client, pollIntervalMs?, poll?, onError? })`** —
+  the canonical `ChainSource` primitive lands. Implements the
+  `subscribe / on-demand / capabilities / lifecycle` contract from
+  [`docs/tx-tracker-spec.md`](https://github.com/valve-tech/evm-toolkit/blob/main/docs/tx-tracker-spec.md)
+  §3.2.
+- **`subscribeBlocks(cb)` / `subscribeMempool(cb)`** — first-class
+  multi-subscriber streams. One upstream poll cycle fans out to every
+  attached subscriber. Returns an idempotent unsubscribe handle.
+- **On-demand RPCs:** `getBlock(tag)`, `getFeeHistory(blockCount, percentiles)`,
+  `getMempoolSnapshot()` (returns the normalized form), `getReceipt(hash)`,
+  `getTransaction(hash)`. Each follows the `safeRequest`-returns-null
+  posture — never throws across the boundary.
+- **`probeCapabilities(client)`** + cached `capabilities()` accessor.
+  The probe runs eagerly at construction; `await source.ready()`
+  guarantees the cached snapshot is populated before reading.
+  Per-method discrimination (`newHeads` / `newPendingTransactions` /
+  `txpoolContent` / `receiptByHash`) honors the "no silent downgrade"
+  invariant from §2.2 of the spec.
+- **`Subscriptions<E>`** — hand-rolled typed pub/sub primitive,
+  browser/mobile-safe (no Node `events` dependency). Per-subscriber
+  throws are swallowed so a single bad consumer cannot affect
+  delivery to the others; emit fans out to a snapshot of subscribers
+  taken at the start of the call so mid-emit registration changes
+  are deferred to the next emit.
+- **Type re-exports** of `BlockResult`, `Capabilities`, `EventSource`,
+  `FeeHistoryResult`, `NormalizedMempool`, `PollOptions`, `RawTx`,
+  `TransactionReceipt`, `TxPoolContent`. These are the wire-format
+  contracts used by `@valve-tech/gas-oracle` and `@valve-tech/tx-tracker`
+  in their v0.3.x migrations.
+- **Additive method on the spec'd interface: `pollOnce()`**. Drives one
+  cycle out-of-band; useful for serverless / manual-refresh flows and
+  for deterministic test setups that don't want to engage fake
+  timers.
+
+### Notes
+
+- WebSocket push subscriptions (`eth_subscribe('newHeads')` /
+  `eth_subscribe('newPendingTransactions')`) are not yet wired in this
+  release. The capability probe discloses what the transport
+  *structurally* supports, but the source always uses its interval
+  poll cycle in this revision. A future release adds the push path
+  without changing the consumer-facing surface.
+- `gas-oracle` and `tx-tracker` migrations to consume `ChainSource`
+  land in subsequent PRs of the same v0.3.x track. Until those merge,
+  this package is consumable directly but its sibling packages keep
+  their v0.3.0 standalone behavior.
+
 ## [0.5.0] — 2026-05-05
 
 ### Notes

@@ -1,0 +1,272 @@
+/**
+ * `createChainSource` — the canonical chain-observation primitive
+ * for `@valve-tech/evm-toolkit`. Owns:
+ *
+ *   - the upstream poll cycle (block + mempool fan-out per tick)
+ *   - the per-method capability probe (run eagerly at construction)
+ *   - typed pub/sub for blocks and mempool snapshots, with
+ *     multiple-subscribers-per-stream as a first-class guarantee
+ *   - on-demand RPC passthroughs for individual blocks, fee history,
+ *     receipts, and transactions
+ *
+ * Sibling features (`@valve-tech/gas-oracle`, `@valve-tech/tx-tracker`)
+ * consume `ChainSource` and never re-implement the poll loop. One
+ * upstream RPC cycle, regardless of how many derived views attach.
+ *
+ * Lifecycle (per spec §14.1):
+ *
+ *   - `start()` begins interval-driven polling. Idempotent.
+ *   - `stop()` halts the interval; subscriber registry is preserved
+ *     so a `start() → stop() → start()` resume keeps existing
+ *     subscriptions alive.
+ *   - The capability probe runs eagerly at *construction*, not at
+ *     start(). By the time a consumer calls `capabilities()` after
+ *     any await, the probe has typically landed. For a brief window
+ *     immediately after `createChainSource()`, `capabilities()` returns
+ *     a conservative default (everything `unavailable` / `gated`).
+ *     Callers that need a guaranteed-fresh result can `await
+ *     source.ready()` before reading `capabilities()`.
+ *
+ * Push subscriptions (eth_subscribe) are not yet wired in v0.3.x —
+ * the `Capabilities.newHeads` / `newPendingTransactions` fields
+ * disclose what *would* be available structurally, but the source
+ * always falls back to its interval poll cycle in this revision.
+ * Future revisions add WS push without changing the consumer-facing
+ * `subscribeBlocks` / `subscribeMempool` shape.
+ */
+
+import type { PublicClient } from 'viem'
+
+import { probeCapabilities } from './capabilities.js'
+import { normalizeMempool } from './mempool.js'
+import { Subscriptions } from './subscriptions.js'
+import {
+  fetchBlock,
+  fetchFeeHistory,
+  fetchReceipt,
+  fetchTransaction,
+  fetchTxPool,
+} from './transport.js'
+import type {
+  BlockResult,
+  Capabilities,
+  FeeHistoryResult,
+  NormalizedMempool,
+  PollOptions,
+  RawTx,
+  TransactionReceipt,
+} from './types.js'
+
+const DEFAULT_POLL_INTERVAL_MS = 10_000
+
+/**
+ * Conservative capability default returned by `capabilities()` before
+ * the eager probe completes. Every signal is treated as unavailable
+ * until proven otherwise — consumers reading capabilities in this
+ * window get the safest answer (no path is available, fall back to
+ * the most defensive flow). Once the probe lands, real values
+ * overwrite this.
+ */
+const PROBING_DEFAULT: Capabilities = {
+  newHeads: 'unavailable',
+  newPendingTransactions: 'unavailable',
+  txpoolContent: 'gated',
+  receiptByHash: 'unavailable',
+  reprobeOnReconnect: false,
+}
+
+export interface CreateChainSourceOptions {
+  /** viem PublicClient pointed at the upstream RPC. */
+  client: PublicClient
+  /**
+   * Polling interval in ms when push subscriptions aren't available
+   * (or aren't preferred). Default 10_000.
+   */
+  pollIntervalMs?: number
+  /**
+   * Producer-side toggles: which RPCs the source's tick fans out.
+   * Disabling `mempool` here disables `subscribeMempool` for every
+   * consumer; the source-level toggle is the single source of truth.
+   * `feeHistory` is currently informational — the source's tick does
+   * not fan out fee history; consumers fetch it on demand via
+   * `getFeeHistory`. The toggle is reserved for forward-compatibility.
+   */
+  poll?: PollOptions
+  /**
+   * Optional error sink — called per-method when an RPC fails. Same
+   * role as on `createGasOracle`. Failures are otherwise swallowed
+   * (the source keeps running on partial data).
+   */
+  onError?: (method: string, err: unknown) => void
+}
+
+export interface ChainSource {
+  /** Begin the poll loop. Idempotent. */
+  start: () => void
+  /** Halt the poll loop. Subscribers preserved across stop/start. Idempotent. */
+  stop: () => void
+  /**
+   * Run one poll cycle out-of-band. Useful for tests, manual
+   * refreshes, and serverless contexts where the interval timer
+   * isn't appropriate. Fans out to subscribers identically to a
+   * timer-driven tick.
+   *
+   * Additive over the design contract — the spec exposes only
+   * subscribe + on-demand methods, but pollOnce is a natural
+   * symmetric helper that keeps the test surface honest without
+   * depending on fake timers.
+   */
+  pollOnce: () => Promise<void>
+  /**
+   * Resolve when the eager capability probe (kicked off at
+   * construction) has completed. After this resolves, `capabilities()`
+   * returns the real probed values rather than the conservative
+   * default.
+   */
+  ready: () => Promise<void>
+  /** Subscribe to new-block events. Multiple subscribers allowed. */
+  subscribeBlocks: (cb: (block: BlockResult) => void) => () => void
+  /** Subscribe to mempool snapshots. Multiple subscribers allowed. */
+  subscribeMempool: (cb: (snapshot: NormalizedMempool) => void) => () => void
+  /** On-demand: fetch a single block (full transactions). */
+  getBlock: (tag: 'latest' | bigint) => Promise<BlockResult | null>
+  /** On-demand: fee history. */
+  getFeeHistory: (
+    blockCount: number,
+    percentiles: number[],
+  ) => Promise<FeeHistoryResult | null>
+  /**
+   * On-demand: fresh `txpool_content` snapshot, normalized. Returns
+   * `null` when the upstream gates the method. For continuous access,
+   * prefer `subscribeMempool` — that path reuses the source's poll
+   * cycle and avoids a fresh RPC per call.
+   */
+  getMempoolSnapshot: () => Promise<NormalizedMempool | null>
+  /** On-demand: receipt by tx hash. */
+  getReceipt: (hash: string) => Promise<TransactionReceipt | null>
+  /** On-demand: tx by hash (used by tx-tracker for replacement detection). */
+  getTransaction: (hash: string) => Promise<RawTx | null>
+  /** Latest probed capability snapshot. */
+  capabilities: () => Capabilities
+}
+
+/**
+ * Build a configured chain-source. The eager capability probe starts
+ * immediately; nothing else happens until `start()` is called.
+ *
+ * @example
+ *   import { createPublicClient, http } from 'viem'
+ *   import { mainnet } from 'viem/chains'
+ *   import { createChainSource } from '@valve-tech/chain-source'
+ *
+ *   const client = createPublicClient({ chain: mainnet, transport: http() })
+ *   const source = createChainSource({ client })
+ *
+ *   source.subscribeBlocks((block) => console.log('new block', block.number))
+ *   source.start()
+ *
+ *   // ... later
+ *   source.stop()
+ */
+export const createChainSource = (
+  options: CreateChainSourceOptions,
+): ChainSource => {
+  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
+  const fetchMempool = options.poll?.mempool !== false
+
+  const blockSubs = new Subscriptions<BlockResult>()
+  const mempoolSubs = new Subscriptions<NormalizedMempool>()
+
+  let timer: ReturnType<typeof setInterval> | null = null
+  let started = false
+  let cachedCapabilities: Capabilities = PROBING_DEFAULT
+
+  const errSink = (method: string) =>
+    options.onError ? (err: unknown) => options.onError!(method, err) : undefined
+
+  // Eager capability probe. Fire-and-forget; consumers that need a
+  // guaranteed-completed probe await source.ready().
+  const readyPromise: Promise<void> = probeCapabilities(options.client, {
+    onError: options.onError,
+  }).then((caps) => {
+    cachedCapabilities = caps
+  })
+
+  // One poll cycle: fetch latest block + (optionally) mempool, then
+  // fan out to subscribers. Only emits when the underlying RPC
+  // succeeded — a `null` block means the cycle is a no-op and a
+  // `null` txpool means mempool subscribers don't fire (but block
+  // subscribers still do).
+  const tick = async (): Promise<void> => {
+    const [block, txPool] = await Promise.all([
+      fetchBlock(options.client, 'latest', errSink('eth_getBlockByNumber')),
+      fetchMempool
+        ? fetchTxPool(options.client, errSink('txpool_content'))
+        : Promise.resolve(null),
+    ])
+
+    if (block) {
+      blockSubs.emit(block)
+    }
+    if (txPool && fetchMempool) {
+      mempoolSubs.emit(normalizeMempool(txPool))
+    }
+  }
+
+  return {
+    start: () => {
+      if (started) return
+      started = true
+      // Fire the first tick immediately so consumers don't wait one
+      // full interval for their first event. The interval timer
+      // takes over from there.
+      void tick()
+      timer = setInterval(() => {
+        void tick()
+      }, pollIntervalMs)
+    },
+
+    stop: () => {
+      if (timer !== null) {
+        clearInterval(timer)
+        timer = null
+      }
+      started = false
+      // Subscriber registry is intentionally preserved across stop —
+      // a start/stop/start pattern keeps existing subscriptions
+      // alive, matching the gas-oracle convention.
+    },
+
+    pollOnce: () => tick(),
+
+    ready: () => readyPromise,
+
+    subscribeBlocks: (cb) => blockSubs.subscribe(cb),
+
+    subscribeMempool: (cb) => mempoolSubs.subscribe(cb),
+
+    getBlock: (tag) =>
+      fetchBlock(options.client, tag, errSink('eth_getBlockByNumber')),
+
+    getFeeHistory: (blockCount, percentiles) =>
+      fetchFeeHistory(
+        options.client,
+        blockCount,
+        percentiles,
+        errSink('eth_feeHistory'),
+      ),
+
+    getMempoolSnapshot: async () => {
+      const txPool = await fetchTxPool(options.client, errSink('txpool_content'))
+      return txPool ? normalizeMempool(txPool) : null
+    },
+
+    getReceipt: (hash) =>
+      fetchReceipt(options.client, hash, errSink('eth_getTransactionReceipt')),
+
+    getTransaction: (hash) =>
+      fetchTransaction(options.client, hash, errSink('eth_getTransactionByHash')),
+
+    capabilities: () => cachedCapabilities,
+  }
+}

@@ -1,14 +1,57 @@
 /**
- * @valve-tech/chain-source — placeholder for v0.0.1.
+ * `@valve-tech/chain-source` — canonical EVM chain-observation primitive
+ * for the `valve-tech/evm-toolkit` synchronized release line.
  *
- * The implementation lands in v0.1.0. This stub claims the npm name
- * and documents the planned shape so consumers reading the package
- * via `npm view` know what it is.
+ * The package is the *foundation* layer for every derived view of
+ * chain state in the toolkit. Both `@valve-tech/gas-oracle` (gas-tier
+ * reducer) and `@valve-tech/tx-tracker` (per-tx state machine) consume
+ * a `ChainSource` rather than re-implementing their own poll cycles.
+ * One upstream RPC stream feeds every consumer that attaches.
  *
- * Design contract: see `docs/tx-tracker-spec.md` §3 in the
- * `valve-tech/evm-toolkit` repo, which defines the `ChainSource`
- * interface this package will export.
+ * See `docs/tx-tracker-spec.md` §3 for the full design contract.
  *
- * Until v0.1.0 is published, no symbols are exported.
+ * @example
+ *   import { createPublicClient, http } from 'viem'
+ *   import { mainnet } from 'viem/chains'
+ *   import { createChainSource } from '@valve-tech/chain-source'
+ *
+ *   const client = createPublicClient({ chain: mainnet, transport: http() })
+ *   const source = createChainSource({ client })
+ *
+ *   source.subscribeBlocks((block) => {
+ *     console.log('block', block.number)
+ *   })
+ *   source.start()
  */
-export {}
+
+export { createChainSource } from './source.js'
+export type { ChainSource, CreateChainSourceOptions } from './source.js'
+
+export { Subscriptions } from './subscriptions.js'
+
+export { normalizeMempool } from './mempool.js'
+
+export { probeCapabilities } from './capabilities.js'
+
+export {
+  safeRequest,
+  fetchBlock,
+  fetchHeadBlockNumber,
+  fetchFeeHistory,
+  fetchTxPool,
+  fetchReceipt,
+  fetchTransaction,
+  zeroHash,
+} from './transport.js'
+
+export type {
+  BlockResult,
+  Capabilities,
+  EventSource,
+  FeeHistoryResult,
+  NormalizedMempool,
+  PollOptions,
+  RawTx,
+  TransactionReceipt,
+  TxPoolContent,
+} from './types.js'

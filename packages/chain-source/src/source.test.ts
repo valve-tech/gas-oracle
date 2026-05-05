@@ -1,0 +1,399 @@
+import { test, expect, vi } from 'vitest'
+import type { PublicClient } from 'viem'
+
+import { createChainSource } from './source.js'
+import type {
+  BlockResult,
+  FeeHistoryResult,
+  RawTx,
+  TransactionReceipt,
+  TxPoolContent,
+} from './types.js'
+
+interface RpcCall {
+  method: string
+  params: unknown[]
+}
+
+interface FakeClientOptions {
+  transport?: { type: string; subscribe?: unknown }
+  responses?: Partial<Record<string, () => unknown>>
+}
+
+const fakeClient = (
+  opts: FakeClientOptions = {},
+): { client: PublicClient; calls: RpcCall[] } => {
+  const calls: RpcCall[] = []
+  const responses = opts.responses ?? {}
+  const client = {
+    transport: opts.transport ?? { type: 'http' },
+    request: vi.fn(async ({ method, params }: RpcCall) => {
+      calls.push({ method, params })
+      const responder = responses[method]
+      if (!responder) return null
+      return responder()
+    }),
+  } as unknown as PublicClient
+  return { client, calls }
+}
+
+const sampleBlock = (number: string): BlockResult => ({
+  number,
+  hash: '0xblock',
+  parentHash: '0xparent',
+  timestamp: '0x1',
+  baseFeePerGas: '0x7',
+  gasLimit: '0x5208',
+  gasUsed: '0x0',
+  transactions: [],
+})
+
+test('subscribeBlocks fires after pollOnce when a block is fetched', async () => {
+  const block = sampleBlock('0x10')
+  const { client } = fakeClient({
+    responses: { eth_getBlockByNumber: () => block },
+  })
+  const source = createChainSource({ client })
+  const cb = vi.fn()
+  source.subscribeBlocks(cb)
+
+  await source.pollOnce()
+
+  expect(cb).toHaveBeenCalledTimes(1)
+  expect(cb).toHaveBeenCalledWith(block)
+})
+
+test('subscribeMempool fires with a normalized snapshot', async () => {
+  const block = sampleBlock('0x10')
+  const txPool: TxPoolContent = {
+    pending: { '0xABC': { '0x5': { hash: '0xdef' } } },
+    queued: {},
+  }
+  const { client } = fakeClient({
+    responses: {
+      eth_getBlockByNumber: () => block,
+      txpool_content: () => txPool,
+    },
+  })
+  const source = createChainSource({ client })
+  const cb = vi.fn()
+  source.subscribeMempool(cb)
+
+  await source.pollOnce()
+
+  expect(cb).toHaveBeenCalledTimes(1)
+  // The cb receives a NORMALIZED snapshot — lowercase address keys,
+  // decimal nonce keys.
+  expect(cb).toHaveBeenCalledWith({
+    pending: { '0xabc': { '5': { hash: '0xdef' } } },
+    queued: {},
+  })
+})
+
+test('one upstream poll cycle fans out to multiple block subscribers', async () => {
+  const block = sampleBlock('0x10')
+  const { client, calls } = fakeClient({
+    responses: { eth_getBlockByNumber: () => block },
+  })
+  const source = createChainSource({ client })
+  const a = vi.fn()
+  const b = vi.fn()
+  const c = vi.fn()
+  source.subscribeBlocks(a)
+  source.subscribeBlocks(b)
+  source.subscribeBlocks(c)
+
+  await source.pollOnce()
+
+  expect(a).toHaveBeenCalledWith(block)
+  expect(b).toHaveBeenCalledWith(block)
+  expect(c).toHaveBeenCalledWith(block)
+  // Critically: only ONE upstream eth_getBlockByNumber call, fanned
+  // out to all subscribers. This is the multi-subscriber-per-stream
+  // guarantee.
+  const blockCalls = calls.filter((c) => c.method === 'eth_getBlockByNumber')
+  expect(blockCalls).toHaveLength(1)
+})
+
+test('unsubscribeBlocks stops further delivery', async () => {
+  const block = sampleBlock('0x10')
+  const { client } = fakeClient({
+    responses: { eth_getBlockByNumber: () => block },
+  })
+  const source = createChainSource({ client })
+  const cb = vi.fn()
+  const unsub = source.subscribeBlocks(cb)
+
+  await source.pollOnce()
+  expect(cb).toHaveBeenCalledTimes(1)
+
+  unsub()
+  await source.pollOnce()
+  expect(cb).toHaveBeenCalledTimes(1)
+})
+
+test('mempool subscribers do not fire when txpool_content is gated', async () => {
+  const block = sampleBlock('0x10')
+  const { client } = fakeClient({
+    responses: {
+      eth_getBlockByNumber: () => block,
+      txpool_content: () => {
+        throw new Error('gated')
+      },
+    },
+  })
+  const source = createChainSource({ client })
+  const blockCb = vi.fn()
+  const mempoolCb = vi.fn()
+  source.subscribeBlocks(blockCb)
+  source.subscribeMempool(mempoolCb)
+
+  await source.pollOnce()
+
+  expect(blockCb).toHaveBeenCalledTimes(1)
+  // Mempool sub does NOT fire on null. Don't emit a misleading
+  // "mempool is empty" event when the underlying RPC failed.
+  expect(mempoolCb).not.toHaveBeenCalled()
+})
+
+test('poll.mempool: false skips the txpool_content RPC during tick', async () => {
+  const block = sampleBlock('0x10')
+  const { client, calls } = fakeClient({
+    responses: { eth_getBlockByNumber: () => block },
+  })
+  const source = createChainSource({ client, poll: { mempool: false } })
+  // Wait for the eager capability probe to settle (it issues one
+  // txpool_content call independently of the poll-toggle — capability
+  // disclosure is separate from runtime fan-out).
+  await source.ready()
+  const probeCalls = calls.filter((c) => c.method === 'txpool_content').length
+
+  source.subscribeMempool(vi.fn())
+  await source.pollOnce()
+
+  // The runtime tick added zero new txpool_content calls beyond the
+  // probe — the toggle short-circuits the cycle's mempool branch.
+  const totalCalls = calls.filter((c) => c.method === 'txpool_content').length
+  expect(totalCalls).toBe(probeCalls)
+})
+
+test('getBlock fetches latest by default', async () => {
+  const block = sampleBlock('0x42')
+  const { client, calls } = fakeClient({
+    responses: { eth_getBlockByNumber: () => block },
+  })
+  const source = createChainSource({ client })
+
+  const result = await source.getBlock('latest')
+
+  expect(result).toBe(block)
+  expect(calls).toContainEqual({
+    method: 'eth_getBlockByNumber',
+    params: ['latest', true],
+  })
+})
+
+test('getBlock encodes a bigint block tag as hex', async () => {
+  const block = sampleBlock('0x3039')
+  const { client, calls } = fakeClient({
+    responses: { eth_getBlockByNumber: () => block },
+  })
+  const source = createChainSource({ client })
+
+  await source.getBlock(12345n)
+
+  expect(calls).toContainEqual({
+    method: 'eth_getBlockByNumber',
+    params: ['0x3039', true],
+  })
+})
+
+test('getFeeHistory passes blockCount + percentiles', async () => {
+  const fixture: FeeHistoryResult = {
+    baseFeePerGas: ['0x1'],
+    gasUsedRatio: [],
+    oldestBlock: '0x0',
+  }
+  const { client, calls } = fakeClient({
+    responses: { eth_feeHistory: () => fixture },
+  })
+  const source = createChainSource({ client })
+
+  const result = await source.getFeeHistory(5, [25, 75])
+
+  expect(result).toBe(fixture)
+  expect(calls).toContainEqual({
+    method: 'eth_feeHistory',
+    params: ['0x5', 'latest', [25, 75]],
+  })
+})
+
+test('getMempoolSnapshot fetches fresh and returns the normalized form', async () => {
+  const txPool: TxPoolContent = {
+    pending: { '0xABC': { '0xa': { hash: '0xdef' } } },
+    queued: {},
+  }
+  const { client } = fakeClient({
+    responses: { txpool_content: () => txPool },
+  })
+  const source = createChainSource({ client })
+
+  const snapshot = await source.getMempoolSnapshot()
+
+  expect(snapshot).toEqual({
+    pending: { '0xabc': { '10': { hash: '0xdef' } } },
+    queued: {},
+  })
+})
+
+test('getMempoolSnapshot returns null when txpool_content is gated', async () => {
+  const { client } = fakeClient({
+    responses: {
+      txpool_content: () => {
+        throw new Error('gated')
+      },
+    },
+  })
+  const source = createChainSource({ client })
+
+  const snapshot = await source.getMempoolSnapshot()
+
+  expect(snapshot).toBeNull()
+})
+
+test('getReceipt forwards the hash and returns the receipt', async () => {
+  const receipt: TransactionReceipt = {
+    transactionHash: '0xabc',
+    blockHash: '0xblock',
+    blockNumber: '0x10',
+    status: '0x1',
+  }
+  const { client, calls } = fakeClient({
+    responses: { eth_getTransactionReceipt: () => receipt },
+  })
+  const source = createChainSource({ client })
+
+  const result = await source.getReceipt('0xabc')
+
+  expect(result).toEqual(receipt)
+  expect(calls).toContainEqual({
+    method: 'eth_getTransactionReceipt',
+    params: ['0xabc'],
+  })
+})
+
+test('getTransaction forwards the hash and returns the tx', async () => {
+  const tx: RawTx = { hash: '0xabc', from: '0x123', nonce: '0x5' }
+  const { client, calls } = fakeClient({
+    responses: { eth_getTransactionByHash: () => tx },
+  })
+  const source = createChainSource({ client })
+
+  const result = await source.getTransaction('0xabc')
+
+  expect(result).toBe(tx)
+  expect(calls).toContainEqual({
+    method: 'eth_getTransactionByHash',
+    params: ['0xabc'],
+  })
+})
+
+test('capabilities() returns probed values after the probe lands', async () => {
+  const { client } = fakeClient({
+    transport: { type: 'http' },
+    responses: {
+      txpool_content: () => ({ pending: {}, queued: {} }),
+      eth_getTransactionReceipt: () => null,
+    },
+  })
+  const source = createChainSource({ client })
+
+  // Wait for the probe to land — the eager probe at construction is
+  // fire-and-forget; one microtask cycle covers it for stub clients.
+  await source.ready()
+
+  const caps = source.capabilities()
+  expect(caps.txpoolContent).toBe('available')
+  expect(caps.receiptByHash).toBe('available')
+  expect(caps.newHeads).toBe('unavailable')
+  expect(caps.reprobeOnReconnect).toBe(false)
+})
+
+test('start is idempotent — calling twice does not double-fire ticks', async () => {
+  const block = sampleBlock('0x10')
+  const { client, calls } = fakeClient({
+    responses: { eth_getBlockByNumber: () => block },
+  })
+  const source = createChainSource({ client, pollIntervalMs: 1_000_000 })
+
+  vi.useFakeTimers()
+  try {
+    source.start()
+    source.start()
+    // The first tick is fire-and-forget at start — wait for it.
+    await vi.advanceTimersByTimeAsync(0)
+
+    const blockCalls = calls.filter((c) => c.method === 'eth_getBlockByNumber')
+    // One immediate tick (not two — start is idempotent), interval not
+    // yet fired (interval is 1M ms).
+    expect(blockCalls).toHaveLength(1)
+
+    source.stop()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('stop halts the poll loop — subscribers stop receiving', async () => {
+  const block = sampleBlock('0x10')
+  const { client } = fakeClient({
+    responses: { eth_getBlockByNumber: () => block },
+  })
+  const source = createChainSource({ client, pollIntervalMs: 100 })
+  const cb = vi.fn()
+  source.subscribeBlocks(cb)
+
+  vi.useFakeTimers()
+  try {
+    source.start()
+    await vi.advanceTimersByTimeAsync(0) // first tick
+    expect(cb).toHaveBeenCalledTimes(1)
+
+    source.stop()
+
+    await vi.advanceTimersByTimeAsync(500) // would have fired more ticks
+    expect(cb).toHaveBeenCalledTimes(1)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('stop is idempotent — second call is a no-op', async () => {
+  const { client } = fakeClient()
+  const source = createChainSource({ client })
+  source.start()
+  expect(() => {
+    source.stop()
+    source.stop()
+  }).not.toThrow()
+})
+
+test('onError fires for sub-RPC failures during poll cycle', async () => {
+  const block = sampleBlock('0x10')
+  const onError = vi.fn<(method: string, err: unknown) => void>()
+  const { client } = fakeClient({
+    responses: {
+      eth_getBlockByNumber: () => block,
+      txpool_content: () => {
+        throw new Error('gated')
+      },
+    },
+  })
+  const source = createChainSource({ client, onError })
+
+  await source.pollOnce()
+
+  expect(
+    onError.mock.calls.some(([method]) => method === 'txpool_content'),
+  ).toBe(true)
+})

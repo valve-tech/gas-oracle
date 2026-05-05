@@ -1,12 +1,35 @@
 /**
- * Stub-package smoke test for v0.0.1.
- *
- * Asserts that the placeholder index emits no symbols. When v0.1.0
- * implementation lands, this test gets replaced with real coverage.
+ * Public-surface smoke test. Confirms the symbols documented in
+ * README + spec §3.5 are actually exported from the package entry.
+ * Catches accidental drops in re-exports during refactors.
  */
 import { test, expect } from 'vitest'
+
 import * as ChainSource from './index.js'
 
-test('chain-source v0.0.1 is a stub — no symbols exported yet', () => {
-  expect(Object.keys(ChainSource)).toEqual([])
+test('public surface exposes createChainSource factory', () => {
+  expect(typeof ChainSource.createChainSource).toBe('function')
+})
+
+test('public surface exposes the Subscriptions primitive', () => {
+  expect(typeof ChainSource.Subscriptions).toBe('function')
+})
+
+test('public surface exposes normalizeMempool helper', () => {
+  expect(typeof ChainSource.normalizeMempool).toBe('function')
+})
+
+test('public surface exposes probeCapabilities', () => {
+  expect(typeof ChainSource.probeCapabilities).toBe('function')
+})
+
+test('public surface exposes the transport helpers', () => {
+  expect(typeof ChainSource.safeRequest).toBe('function')
+  expect(typeof ChainSource.fetchBlock).toBe('function')
+  expect(typeof ChainSource.fetchHeadBlockNumber).toBe('function')
+  expect(typeof ChainSource.fetchFeeHistory).toBe('function')
+  expect(typeof ChainSource.fetchTxPool).toBe('function')
+  expect(typeof ChainSource.fetchReceipt).toBe('function')
+  expect(typeof ChainSource.fetchTransaction).toBe('function')
+  expect(ChainSource.zeroHash).toBe(`0x${'00'.repeat(32)}`)
 })
