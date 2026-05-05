@@ -5,6 +5,16 @@ All notable changes to `@valve-tech/gas-oracle` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] — 2026-05-05
+
+### Notes
+
+- Synchronized release — no changes to this package. Bumped in
+  lockstep with `@valve-tech/wallet-adapter@0.5.0`, which gains rich
+  `TxContext` payloads on every lifecycle event (chainId + request +
+  block). See that package's changelog for the breaking-change
+  details.
+
 ## [0.4.1] — 2026-05-04
 
 ### Notes

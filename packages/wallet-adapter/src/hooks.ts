@@ -29,9 +29,18 @@
  *
  * Fire-ers fire BOTH shapes for every transition — exactly once each —
  * so consumers can choose which to wire without affecting the other.
+ *
+ * Every payload carries a `TxContext` (`chainId` + `request`) so
+ * consumers never have to side-channel the originating chain or the
+ * original send request to use the events. `confirmed` and
+ * receipt-bearing `failed` events also carry the containing `Block` so
+ * downstream trackers don't have to re-fetch it for timestamp / fee
+ * analytics — that's the "don't make consumers re-gather what we
+ * already have" rule the events are designed around.
  */
 
-import type { Hex, TransactionReceipt } from 'viem'
+import type { Block, Hex, TransactionReceipt } from 'viem'
+import type { WalletSendTransactionRequest } from './wallet.js'
 
 /**
  * Every lifecycle phase a tracked transaction can be in, from intent
@@ -49,18 +58,68 @@ export type WritePhase =
   | 'replaced'
 
 /**
- * Discriminated-union event payload for the `onPhase` callback. Switch
- * on `event.phase` and TypeScript narrows the rest of the fields
- * automatically — no `event.context?.receipt` indirection.
+ * Per-phase data delta. Each entry is exactly the fields available at
+ * that phase BEYOND the always-present `TxContext` (`chainId`,
+ * `request`).
+ *
+ * Adding a new phase is one entry here plus a fire-er; adding a new
+ * shared field is one entry in `TxContext`. The `WritePhaseEvent`
+ * union is derived from this map, so variants stay in lockstep
+ * mechanically.
+ *
+ * Declared as an `interface` (not a `type`) so consumers can use
+ * declaration merging to extend the map with their own phases — useful
+ * for trackers that surface implementation-specific transitions
+ * without forking the union.
+ *
+ * `block` is optional on `confirmed` / `failed` / `replaced` because
+ * `awaitReceiptWithHooks` allows opting out of the block fetch via
+ * `includeBlock: false`. Trackers that observe `replaced` from the
+ * mempool may also fire it without a receipt.
  */
-export type WritePhaseEvent =
-  | { phase: 'preparing' }
-  | { phase: 'awaiting-signature' }
-  | { phase: 'pending'; hash: Hex }
-  | { phase: 'confirmed'; hash: Hex; receipt: TransactionReceipt }
-  | { phase: 'failed'; error: Error; hash?: Hex; receipt?: TransactionReceipt }
-  | { phase: 'dropped'; hash: Hex }
-  | { phase: 'replaced'; original: Hex; replacement: Hex; receipt?: TransactionReceipt }
+export interface WritePhaseSteps {
+  preparing: object
+  'awaiting-signature': object
+  pending: { hash: Hex }
+  confirmed: { hash: Hex; receipt: TransactionReceipt; block?: Block }
+  failed: { error: Error; hash?: Hex; receipt?: TransactionReceipt; block?: Block }
+  dropped: { hash: Hex }
+  replaced: { original: Hex; replacement: Hex; receipt?: TransactionReceipt; block?: Block }
+}
+
+/**
+ * Always-present transaction context surrounding every phase event.
+ * Carries the chain identity and the original send request so
+ * consumers don't have to maintain a side-channel `hash → request` map
+ * or call `client.chain.id` from inside their callbacks.
+ *
+ * `Extra` is the per-phase delta from `WritePhaseSteps[K]`. Defaulting
+ * `Extra` to `object` lets the bare `TxContext` describe phases with
+ * no extra fields (`preparing`, `awaiting-signature`).
+ */
+export type TxContext<Extra extends object = object> = {
+  /** Chain id this transaction targets. Pulled off `request.chainId`. */
+  chainId: number
+  /**
+   * The fully-formed wallet send request as passed into the SDK
+   * (`to`, `data`, `value`, `chainId`, gas inputs). Carried verbatim
+   * so consumers can construct a tracked-tx record or replay the
+   * input without extra plumbing.
+   */
+  request: WalletSendTransactionRequest
+} & Extra
+
+/**
+ * Discriminated-union event payload for the `onPhase` callback.
+ * Switch on `event.phase` and TypeScript narrows the rest of the
+ * fields automatically — no `event.context?.receipt` indirection.
+ *
+ * Derived mechanically from `WritePhaseSteps` × `TxContext` so adding
+ * a phase to the map is the only edit needed to extend the union.
+ */
+export type WritePhaseEvent = {
+  [K in keyof WritePhaseSteps]: { phase: K } & TxContext<WritePhaseSteps[K]>
+}[keyof WritePhaseSteps]
 
 /**
  * Per-call hooks fired at real boundaries during a tracked tx's
@@ -68,10 +127,12 @@ export type WritePhaseEvent =
  * subset corresponds to phases they actually observe; consumers wire
  * only the ones their UI needs.
  *
- * Named hooks vs `onPhase`: complementary, not alternatives. A
- * fire-er fires both for every transition — the named hook (if a
- * consumer wired it) and `onPhase` (if a consumer wired it) — so no
- * transition is observable from one shape but not the other.
+ * Each named hook receives a `TxContext<WritePhaseSteps[K]>` info bag
+ * matching the phase. The `onPhase` complement receives the full
+ * discriminated union. Fire-ers fire both for every transition — the
+ * named hook (if a consumer wired it) and `onPhase` (if a consumer
+ * wired it) — so no transition is observable from one shape but not
+ * the other.
  */
 export interface WriteHookParams {
   /**
@@ -79,34 +140,42 @@ export interface WriteHookParams {
    * from "preparing" to "awaiting wallet signature" at the precise
    * boundary, regardless of how much pre-wallet work the SDK did.
    */
-  onAwaitingSignature?: () => void
+  onAwaitingSignature?: (info: TxContext<WritePhaseSteps['awaiting-signature']>) => void
   /**
-   * Called once with the on-chain tx hash, immediately after
-   * `sendTransaction` resolves and *before* any receipt-await. UI flips
-   * from "awaiting" to "pending" the moment the hash exists.
+   * Called once with the on-chain tx hash plus full context,
+   * immediately after `sendTransaction` resolves and *before* any
+   * receipt-await. UI flips from "awaiting" to "pending" the moment
+   * the hash exists.
    *
    * Per-call vs constructor-level: SDKs may also expose a separate
    * constructor-level `onTransactionHash` channel for analytics /
-   * global observers — they're complementary, fire on the same line.
+   * global observers — they're complementary, fire on the same line
+   * with the same payload.
    */
-  onTransactionHash?: (hash: Hex) => void
+  onTransactionHash?: (info: TxContext<WritePhaseSteps['pending']>) => void
   /**
-   * Called once with the mined receipt when `receipt.status === 'success'`.
-   * UI flips to a terminal "confirmed" state. Receives the full receipt
-   * so consumers can extract block number, gas used, decoded events.
+   * Called once when `receipt.status === 'success'`. Receives the full
+   * info bag — `hash`, `receipt`, optional `block` (present unless
+   * `includeBlock: false` was passed), plus `chainId` and `request` —
+   * so consumers don't re-fetch the block for timestamp / baseFee
+   * UI.
    */
-  onConfirmed?: (receipt: TransactionReceipt) => void
+  onConfirmed?: (info: TxContext<WritePhaseSteps['confirmed']>) => void
   /**
-   * Called once with the underlying error on any terminal failure that
-   * is NOT a replacement or a drop:
+   * Called once with the underlying error (and any context available
+   * at the failure point) on any terminal failure that is NOT a
+   * replacement or a drop:
    *   - wallet rejection (`WalletRejectedError`)
    *   - on-chain revert (`ContractRevertedError`)
    *   - any other thrown error from the wallet or RPC.
    *
-   * Use `instanceof` against `WalletRejectedError` / `ContractRevertedError`
-   * to discriminate; everything else is a plain `Error`.
+   * Use `instanceof` against `WalletRejectedError` /
+   * `ContractRevertedError` to discriminate; everything else is a
+   * plain `Error`. Wallet-side failures carry no `hash` / `receipt`;
+   * receipt-bearing failures (revert) carry both, plus the block
+   * (unless `includeBlock: false`).
    */
-  onFailed?: (error: Error) => void
+  onFailed?: (info: TxContext<WritePhaseSteps['failed']>) => void
   /**
    * Called once when a tracker has determined the tx will not be
    * included — typically: not seen in mempool for N consecutive blocks
@@ -118,18 +187,18 @@ export interface WriteHookParams {
    * observation. Wire this against a `tx-tracker` instance, not against
    * `awaitReceiptWithHooks`.
    */
-  onDropped?: (info: { hash: Hex }) => void
+  onDropped?: (info: TxContext<WritePhaseSteps['dropped']>) => void
   /**
    * Called once when a tracker observes that a *different* tx with the
    * same nonce mined in place of the one we were watching — typically
    * the user's own speed-up / cancel from their wallet, or a
    * fee-replacement broadcast separately.
    *
-   * `replacement.receipt` is included when the replacement has been
-   * mined; trackers may emit `replaced` with no receipt if they only
-   * saw the replacement in the mempool.
+   * `info.receipt` and `info.block` are populated when the replacement
+   * has been mined; trackers may emit `replaced` without them if they
+   * only saw the replacement in the mempool.
    */
-  onReplaced?: (info: { original: Hex; replacement: Hex; receipt?: TransactionReceipt }) => void
+  onReplaced?: (info: TxContext<WritePhaseSteps['replaced']>) => void
   /**
    * Single-callback complement to the named hooks. Fires for every
    * lifecycle transition with a discriminated-union payload. Useful

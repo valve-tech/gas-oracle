@@ -5,13 +5,14 @@
  * This is the runtime piece of the lifecycle contract. SDK authors call
  * this from inside any write method that opens a wallet popup; it
  * guarantees:
- *   - `onAwaitingSignature` fires exactly once, immediately before
- *     `wallet.sendTransaction(...)`.
+ *   - `onAwaitingSignature` fires exactly once with `TxContext` (chainId
+ *     + request), immediately before `wallet.sendTransaction(...)`.
  *   - `onTransactionHash` (per-call) and the global `onTransactionHash`
- *     channel fire exactly once each, after `sendTransaction` resolves
- *     and BEFORE the SDK awaits any receipt — so callers can flip their
- *     UI from `awaiting-signature` to `pending` the moment a hash exists
- *     instead of stalling for the full inclusion window.
+ *     channel fire exactly once each with `TxContext + hash`, after
+ *     `sendTransaction` resolves and BEFORE the SDK awaits any receipt
+ *     — so callers can flip their UI from `awaiting-signature` to
+ *     `pending` the moment a hash exists instead of stalling for the
+ *     full inclusion window.
  *   - Wallet rejections (EIP-1193 `code === 4001`, viem's
  *     `UserRejectedRequestError`, or matching message text — see
  *     `@valve-tech/viem-errors` for the detection signals) are converted
@@ -19,16 +20,15 @@
  *     them. Non-rejection errors are re-thrown unchanged so the SDK
  *     can map them to its own typed error vocabulary.
  *
- * Without this helper, every SDK that wants the contract has to
- * re-implement: the error-mapping `try/catch` block (with the
- * three-signal rejection check), the constructor-vs-per-call hook
- * fan-out, and the precise ordering relative to `sendTransaction`.
+ * Every payload carries `chainId` and the original `request`, so
+ * analytics observers and tx-tracker consumers don't need to keep a
+ * side-channel `hash → request` map or read chainId off the client.
  */
 
 import type { Hex } from 'viem'
 import { isUserRejectionError } from '@valve-tech/viem-errors'
 import type { WalletAdapter, WalletSendTransactionRequest } from './wallet.js'
-import type { WriteHookParams } from './hooks.js'
+import type { TxContext, WriteHookParams, WritePhaseSteps } from './hooks.js'
 
 /**
  * Thrown by `sendTransactionWithHooks` when the wallet rejection is
@@ -56,16 +56,16 @@ export interface SendTransactionWithHooksOptions {
   wallet: WalletAdapter
   /** The fully-formed send request (calldata, gas inputs, chainId). */
   request: WalletSendTransactionRequest
-  /** Per-call lifecycle hooks. Both fields are optional. */
+  /** Per-call lifecycle hooks. All fields are optional. */
   hooks?: WriteHookParams
   /**
    * Optional global / constructor-level `onTransactionHash` channel.
    * Fires alongside `hooks.onTransactionHash` on the same line —
-   * complementary, not alternatives. Use this for analytics or
-   * debug-logging that should observe every write regardless of which
-   * caller fired it.
+   * complementary, not alternatives. Receives the same rich
+   * `TxContext + hash` payload so analytics observers don't have to
+   * resolve chainId / request from a side channel.
    */
-  onTransactionHash?: (hash: Hex) => void
+  onTransactionHash?: (info: TxContext<WritePhaseSteps['pending']>) => void
 }
 
 /**
@@ -82,7 +82,12 @@ export interface SendTransactionWithHooksOptions {
  *     hooks: params,                     // user-supplied per-call hooks
  *     onTransactionHash: this.onHash,    // constructor-level / analytics
  *   })
- *   const receipt = await this.publicClient.waitForTransactionReceipt({ hash })
+ *   const receipt = await awaitReceiptWithHooks({
+ *     publicClient,
+ *     hash,
+ *     request: { ...prepared, ...gasInputs },
+ *     hooks: params,
+ *   })
  *   return { hash, receipt }
  * } catch (err) {
  *   if (err instanceof WalletRejectedError) {
@@ -96,11 +101,12 @@ export async function sendTransactionWithHooks(
   options: SendTransactionWithHooksOptions,
 ): Promise<Hex> {
   const { wallet, request, hooks, onTransactionHash } = options
+  const ctx: TxContext = { chainId: request.chainId, request }
 
   let hash: Hex
   try {
-    hooks?.onAwaitingSignature?.()
-    hooks?.onPhase?.({ phase: 'awaiting-signature' })
+    hooks?.onAwaitingSignature?.(ctx)
+    hooks?.onPhase?.({ phase: 'awaiting-signature', ...ctx })
     hash = await wallet.sendTransaction(request)
   } catch (err) {
     const failure = isUserRejectionError(err)
@@ -108,13 +114,15 @@ export async function sendTransactionWithHooks(
       : err instanceof Error
         ? err
         : new Error(String(err))
-    hooks?.onFailed?.(failure)
-    hooks?.onPhase?.({ phase: 'failed', error: failure })
+    const failedInfo: TxContext<WritePhaseSteps['failed']> = { ...ctx, error: failure }
+    hooks?.onFailed?.(failedInfo)
+    hooks?.onPhase?.({ phase: 'failed', ...failedInfo })
     throw failure
   }
 
-  onTransactionHash?.(hash)
-  hooks?.onTransactionHash?.(hash)
-  hooks?.onPhase?.({ phase: 'pending', hash })
+  const pendingInfo: TxContext<WritePhaseSteps['pending']> = { ...ctx, hash }
+  onTransactionHash?.(pendingInfo)
+  hooks?.onTransactionHash?.(pendingInfo)
+  hooks?.onPhase?.({ phase: 'pending', ...pendingInfo })
   return hash
 }

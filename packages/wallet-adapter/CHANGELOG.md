@@ -6,6 +6,85 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] — 2026-05-05
+
+### Changed — BREAKING
+
+- **All lifecycle event payloads are now rich info bags carrying full
+  `TxContext` (`chainId` + original `request`) plus phase-specific
+  fields.** The previous shapes forced consumers (especially the
+  upcoming `@valve-tech/tx-tracker`) to maintain a side-channel
+  `hash → request` map and re-fetch chainId / block timestamp / block
+  baseFeePerGas from the public client. The lib already has all of
+  that in scope when it fires events, so the consumer should never
+  have to re-gather it.
+
+  Old / new signatures:
+
+  | Hook | Old | New |
+  | ---- | --- | --- |
+  | `onAwaitingSignature` | `() => void` | `(info: TxContext) => void` |
+  | `onTransactionHash` (per-call & global) | `(hash: Hex) => void` | `(info: TxContext<{ hash }>) => void` |
+  | `onConfirmed` | `(receipt: TransactionReceipt) => void` | `(info: TxContext<{ hash, receipt, block? }>) => void` |
+  | `onFailed` | `(error: Error) => void` | `(info: TxContext<{ error, hash?, receipt?, block? }>) => void` |
+  | `onDropped` | `(info: { hash }) => void` | `(info: TxContext<{ hash }>) => void` |
+  | `onReplaced` | `(info: { original, replacement, receipt? }) => void` | `(info: TxContext<{ original, replacement, receipt?, block? }>) => void` |
+
+  The `onPhase` discriminated-union event gains the same enrichment;
+  `WritePhaseEvent` is now derived mechanically from a `WritePhaseSteps`
+  map intersected with `TxContext<Steps[K]>`, so adding a phase or a
+  shared field is a one-line edit instead of seven.
+
+- **`awaitReceiptWithHooks` now requires `request` in its options and
+  fetches the containing `Block` by default.** Signature gained
+  `request: WalletSendTransactionRequest` (used to populate `TxContext`
+  in event payloads) and `includeBlock?: boolean = true`. When
+  `includeBlock` is left at its default, the helper calls
+  `publicClient.getBlock({ blockHash })` once after a successful
+  receipt-await; the resulting `Block` is attached to `confirmed` /
+  receipt-bearing `failed` event payloads. Pass `includeBlock: false`
+  to skip the extra RPC round trip in environments that don't need
+  block-level data.
+
+- **`ReceiptAwaiter` interface gained `getBlock`.** Mocks need to add
+  a `getBlock(args: { blockHash: Hex }): Promise<Block>` field. Real
+  viem `PublicClient` instances satisfy the new shape unchanged.
+
+### Added
+
+- `WritePhaseSteps` interface — phase-name → per-phase delta map.
+  Declared as `interface` (not `type`) so consumers can extend the
+  lifecycle via declaration merging without forking the union.
+- `TxContext<Extra extends object = object>` — generic always-present
+  context (`chainId`, `request`) intersected with `Extra` to derive
+  per-phase event shapes. Defaulting `Extra` keeps `TxContext` usable
+  bare.
+- `WritePhaseEvent` is now derived mechanically as
+  `{ [K in keyof WritePhaseSteps]: { phase: K } & TxContext<WritePhaseSteps[K]> }[keyof WritePhaseSteps]`.
+- `confirmed` and `replaced` events carry an optional `block: Block`.
+  `failed` events carry the receipt-bearing context (hash, receipt,
+  block) when the failure has one (revert), and just the error +
+  context otherwise (wallet rejection, network timeout).
+
+### Migration
+
+```ts
+// before — v0.4.x
+hooks: {
+  onConfirmed: (receipt) => recordTx({ hash: receipt.transactionHash, receipt }),
+  onFailed: (error) => logFailure(error),
+}
+await awaitReceiptWithHooks({ publicClient, hash, hooks })
+
+// after — v0.5.x
+hooks: {
+  onConfirmed: (info) => recordTx(info), // info.chainId, info.request, info.hash, info.receipt, info.block
+  onFailed: (info) => logFailure(info.error, info.chainId, info.request),
+}
+await awaitReceiptWithHooks({ publicClient, hash, request, hooks })
+//                                                  ^^^^^^^ new required field
+```
+
 ## [0.4.1] — 2026-05-04
 
 ### Fixed

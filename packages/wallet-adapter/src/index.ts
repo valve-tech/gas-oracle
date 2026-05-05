@@ -9,9 +9,11 @@ export type {
 } from './wallet.js'
 
 export type {
+  TxContext,
   WriteHookParams,
   WritePhase,
   WritePhaseEvent,
+  WritePhaseSteps,
 } from './hooks.js'
 
 export {

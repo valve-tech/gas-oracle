@@ -13,21 +13,27 @@ all agree on the same surface:
    named hooks (`onAwaitingSignature`, `onTransactionHash`,
    `onConfirmed`, `onFailed`, `onDropped`, `onReplaced`) plus a
    complementary single-callback shape (`onPhase(event)`) with a
-   discriminated-union payload. Fire-ers fire BOTH shapes for every
-   transition — exactly once each — so wiring named hooks doesn't
-   preclude `onPhase` and vice versa.
+   discriminated-union payload. Every payload is a `TxContext` info
+   bag — `{ chainId, request, ...phase-specific }` — so consumers
+   never have to side-channel the originating chain or the original
+   send request. Fire-ers fire BOTH shapes for every transition —
+   exactly once each — so wiring named hooks doesn't preclude
+   `onPhase` and vice versa.
 3. **`sendTransactionWithHooks(options)`** — wallet-side helper. Fires
    the pre-wallet (`onAwaitingSignature`, `onPhase('awaiting-signature')`)
-   and post-hash (`onTransactionHash`, `onPhase('pending', { hash })`)
+   and post-hash (`onTransactionHash`, `onPhase('pending', { ..., hash })`)
    transitions. Converts wallet rejections to a typed
-   `WalletRejectedError`, fires `onFailed` + `onPhase('failed', { error })`,
+   `WalletRejectedError`, fires `onFailed` + `onPhase('failed', { ..., error })`,
    then throws.
 4. **`awaitReceiptWithHooks(options)`** — chain-side helper. Awaits
-   `waitForTransactionReceipt`, fires `onConfirmed` +
-   `onPhase('confirmed', { hash, receipt })` on success, or `onFailed`
-   + `onPhase('failed', ...)` with a typed `ContractRevertedError` on
-   `status: 'reverted'`. Other receipt-await errors re-thrown unchanged
-   after firing the failure hooks.
+   `waitForTransactionReceipt`, fetches the containing block (so
+   downstream consumers don't re-fetch it for `timestamp` /
+   `baseFeePerGas`), then fires `onConfirmed` +
+   `onPhase('confirmed', { ..., hash, receipt, block })` on success,
+   or `onFailed` + `onPhase('failed', ...)` with a typed
+   `ContractRevertedError` on `status: 'reverted'`. Other receipt-await
+   errors re-thrown unchanged after firing the failure hooks. Pass
+   `includeBlock: false` to skip the block fetch.
 5. **`TX_STATUS` / `TrackedTx`** — vocabulary for "this transaction is
    in flight" UIs (toast strips, inline indicators, history panes) so
    they can sit on top of any tracker without redefining state names.
@@ -93,28 +99,35 @@ export class MyClient {
     private wallet: WalletAdapter,
     private chainId: number,
     private escrow: `0x${string}`,
-    /** Optional global / analytics channel — fires alongside the per-call hook. */
-    private onTransactionHash?: (hash: `0x${string}`) => void,
+    /**
+     * Optional global / analytics channel — fires alongside the per-call hook.
+     * Receives the rich `{ chainId, request, hash }` info bag, so analytics
+     * observers see the originating chain and request without a side channel.
+     */
+    private onTransactionHash?: WriteHookParams['onTransactionHash'],
   ) {}
 
   async deposit(params: MyWriteParams & WriteHookParams) {
+    const request = {
+      to: this.escrow,
+      data: this.encodeDeposit(params),
+      chainId: this.chainId,
+    }
     try {
       const hash = await sendTransactionWithHooks({
         wallet: this.wallet,
-        request: {
-          to: this.escrow,
-          data: this.encodeDeposit(params),
-          chainId: this.chainId,
-        },
+        request,
         hooks: params,
         onTransactionHash: this.onTransactionHash,
       })
       const receipt = await awaitReceiptWithHooks({
         publicClient: this.publicClient,
         hash,
+        request,                 // carried into every phase event as part of TxContext
         hooks: params,
       })
       // protocol-specific work here (decode logs, etc.) — onConfirmed already fired
+      // with { chainId, request, hash, receipt, block } in scope
       return { hash, receipt }
     } catch (err) {
       if (err instanceof WalletRejectedError) {
@@ -131,28 +144,33 @@ export class MyClient {
 
 `sendTransactionWithHooks` guarantees:
 
-- `onAwaitingSignature` fires **once**, **immediately before**
-  `wallet.sendTransaction`.
-- `onTransactionHash` (per-call **and** global) fires **once each**,
-  **after** `sendTransaction` resolves and **before** any receipt-await.
+- `onAwaitingSignature` fires **once** with `{ chainId, request }`,
+  **immediately before** `wallet.sendTransaction`.
+- `onTransactionHash` (per-call **and** global) fires **once each**
+  with `{ chainId, request, hash }`, **after** `sendTransaction`
+  resolves and **before** any receipt-await.
 - Wallet rejections — detected via the three-signal check in
   `@valve-tech/viem-errors` (EIP-1193 `code === 4001`, viem class name,
   message regex, anywhere in the cause chain) — are thrown as
-  `WalletRejectedError`. `onFailed` fires with the rejection error
-  before the throw.
-- Any other thrown error fires `onFailed` and re-throws unchanged so
-  the SDK keeps control of its error mapping.
+  `WalletRejectedError`. `onFailed` fires with
+  `{ chainId, request, error: <WalletRejectedError> }` before the throw.
+- Any other thrown error fires `onFailed` (with `error: <thrown>`) and
+  re-throws unchanged so the SDK keeps control of its error mapping.
 
 `awaitReceiptWithHooks` guarantees:
 
-- On `receipt.status === 'success'`: fires `onConfirmed(receipt)` and
+- On `receipt.status === 'success'`: fetches the containing block
+  (unless `includeBlock: false`), then fires
+  `onConfirmed({ chainId, request, hash, receipt, block? })` and
   resolves with the receipt.
-- On `receipt.status === 'reverted'`: fires `onFailed` with a
-  `ContractRevertedError` (carrying `hash` + the full `receipt` for
-  log inspection) and throws it.
+- On `receipt.status === 'reverted'`: fetches the block, then fires
+  `onFailed({ chainId, request, hash, receipt, block?, error: <ContractRevertedError> })`
+  and throws the error. `ContractRevertedError` carries `hash` + the
+  full `receipt` for log inspection.
 - On any thrown error during the receipt-await (network / RPC /
-  abort): fires `onFailed` with the original error and re-throws
-  unchanged.
+  abort): fires `onFailed({ chainId, request, error })` (no
+  `hash`/`receipt`/`block`) and re-throws unchanged. The block fetch
+  is skipped when the receipt itself fails to arrive.
 
 A `WriteHookParams` consumer (toast strip, inline indicator, etc.)
 that wires all four hooks can drive its full state machine — pre-wallet
@@ -184,11 +202,13 @@ function subtitle(tx: TrackedTx): string {
 | `WalletAdapter` | type | `{ address?, sendTransaction(req), readContract?(req) }` |
 | `WalletSendTransactionRequest` | type | EIP-1559 send shape — `{ to, data, value?, chainId, maxFeePerGas?, maxPriorityFeePerGas? }` |
 | `WalletReadContractRequest` | type | `{ address, abi, functionName, args?, chainId? }` |
-| `WriteHookParams` | type | six named hooks (`onAwaitingSignature`, `onTransactionHash`, `onConfirmed`, `onFailed`, `onDropped`, `onReplaced`) + `onPhase(event)` |
+| `WriteHookParams` | type | six named hooks (`onAwaitingSignature`, `onTransactionHash`, `onConfirmed`, `onFailed`, `onDropped`, `onReplaced`) + `onPhase(event)`. Every callback receives a `TxContext<Steps[K]>` info bag. |
 | `WritePhase` | type | `'preparing' \| 'awaiting-signature' \| 'pending' \| 'confirmed' \| 'failed' \| 'dropped' \| 'replaced'` |
-| `WritePhaseEvent` | type | discriminated union of phase + payload |
+| `WritePhaseSteps` | interface | per-phase data delta map. `pending: { hash }`, `confirmed: { hash, receipt, block? }`, etc. Open to declaration merging. |
+| `TxContext<Extra>` | type | `{ chainId, request } & Extra`. The always-present context intersected with the per-phase delta. Defaults `Extra` to `object`. |
+| `WritePhaseEvent` | type | derived `{ [K in keyof WritePhaseSteps]: { phase: K } & TxContext<WritePhaseSteps[K]> }[keyof WritePhaseSteps]`. |
 | `sendTransactionWithHooks(opts)` | function | `{ wallet, request, hooks?, onTransactionHash? } → Promise<Hex>`. Wallet-side helper. |
-| `awaitReceiptWithHooks(opts)` | function | `{ publicClient, hash, hooks? } → Promise<TransactionReceipt>`. Chain-side helper. |
+| `awaitReceiptWithHooks(opts)` | function | `{ publicClient, hash, request, includeBlock?, hooks? } → Promise<TransactionReceipt>`. Chain-side helper; fetches the containing block by default. |
 | `WalletRejectedError` | class | `Error` subclass with `cause: Error`. Thrown by `sendTransactionWithHooks` on user rejection. |
 | `ContractRevertedError` | class | `Error` subclass with `hash` + `receipt`. Thrown by `awaitReceiptWithHooks` on `status: reverted`. |
 | `SendTransactionWithHooksOptions` / `AwaitReceiptWithHooksOptions` / `ReceiptAwaiter` | type | options + minimal client shape |
@@ -206,6 +226,22 @@ function subtitle(tx: TrackedTx): string {
   state-machine consumers. Fire-ers fire BOTH shapes for every
   transition — exactly once each. Wiring named hooks doesn't preclude
   `onPhase` and vice versa.
+- **Rich payloads, not bare arguments.** Every event carries
+  `TxContext` (`chainId` + the original `request`) on top of its
+  phase-specific fields. The lib already has all of that in scope
+  when it fires events; the alternative — `(receipt) => void` and
+  `(hash) => void` — forces every consumer to maintain a side-channel
+  `hash → request` map and call `client.chain.id` from inside their
+  callbacks. `awaitReceiptWithHooks` also fetches the containing
+  block once and includes it on `confirmed` / receipt-bearing
+  `failed` events, so downstream consumers (notably
+  `@valve-tech/tx-tracker`) skip the round trip.
+- **`WritePhaseSteps` is the single source of truth for phase
+  shapes.** `WritePhaseEvent` is derived mechanically as
+  `{ [K in keyof WritePhaseSteps]: { phase: K } & TxContext<WritePhaseSteps[K]> }`,
+  so adding a phase is one entry in the map plus a fire-er. Adding a
+  shared field is one entry in `TxContext`. Both stay in lockstep
+  with the named hook signatures.
 - **`onFailed` is the unified failure callback for revert / rejection /
   network errors.** Wallet rejection, on-chain revert, and network
   errors all flow through it. `instanceof` against

@@ -20,7 +20,7 @@ describe('sendTransactionWithHooks', () => {
     expect(hash).toBe('0xabc')
   })
 
-  it('fires onAwaitingSignature immediately before wallet.sendTransaction', async () => {
+  it('fires onAwaitingSignature with TxContext (chainId + request) before sendTransaction', async () => {
     const order: string[] = []
     const wallet: WalletAdapter = {
       sendTransaction: vi.fn(async () => {
@@ -28,34 +28,46 @@ describe('sendTransactionWithHooks', () => {
         return '0xabc' as Hex
       }),
     }
-    const hooks = { onAwaitingSignature: vi.fn(() => { order.push('onAwaitingSignature') }) }
+    const onAwaitingSignature = vi.fn(() => { order.push('onAwaitingSignature') })
 
-    await sendTransactionWithHooks({ wallet, request: REQUEST, hooks })
+    await sendTransactionWithHooks({ wallet, request: REQUEST, hooks: { onAwaitingSignature } })
 
     expect(order).toEqual(['onAwaitingSignature', 'sendTransaction'])
+    expect(onAwaitingSignature).toHaveBeenCalledExactlyOnceWith({
+      chainId: 369,
+      request: REQUEST,
+    })
   })
 
-  it('fires per-call onTransactionHash with the resolved hash', async () => {
+  it('fires per-call onTransactionHash with TxContext + hash', async () => {
     const onTransactionHash = vi.fn()
     await sendTransactionWithHooks({
       wallet: okWallet('0xabc'),
       request: REQUEST,
       hooks: { onTransactionHash },
     })
-    expect(onTransactionHash).toHaveBeenCalledExactlyOnceWith('0xabc')
+    expect(onTransactionHash).toHaveBeenCalledExactlyOnceWith({
+      chainId: 369,
+      request: REQUEST,
+      hash: '0xabc',
+    })
   })
 
-  it('fires the global onTransactionHash with the resolved hash', async () => {
+  it('fires the global onTransactionHash with TxContext + hash', async () => {
     const onTransactionHash = vi.fn()
     await sendTransactionWithHooks({
       wallet: okWallet('0xabc'),
       request: REQUEST,
       onTransactionHash,
     })
-    expect(onTransactionHash).toHaveBeenCalledExactlyOnceWith('0xabc')
+    expect(onTransactionHash).toHaveBeenCalledExactlyOnceWith({
+      chainId: 369,
+      request: REQUEST,
+      hash: '0xabc',
+    })
   })
 
-  it('fires both global and per-call onTransactionHash on the same line', async () => {
+  it('fires both global and per-call onTransactionHash on the same line, with rich payload', async () => {
     const order: string[] = []
     const global = vi.fn(() => { order.push('global') })
     const perCall = vi.fn(() => { order.push('perCall') })
@@ -67,9 +79,9 @@ describe('sendTransactionWithHooks', () => {
       onTransactionHash: global,
     })
 
-    expect(global).toHaveBeenCalledWith('0xabc')
-    expect(perCall).toHaveBeenCalledWith('0xabc')
-    // Global fires first (analytics observers shouldn't be blocked behind UI state).
+    const expectedInfo = { chainId: 369, request: REQUEST, hash: '0xabc' }
+    expect(global).toHaveBeenCalledWith(expectedInfo)
+    expect(perCall).toHaveBeenCalledWith(expectedInfo)
     expect(order).toEqual(['global', 'perCall'])
   })
 
@@ -128,7 +140,7 @@ describe('sendTransactionWithHooks', () => {
     expect(onAwaitingSignature).toHaveBeenCalledOnce()
   })
 
-  it('fires onFailed with the WalletRejectedError when the wallet rejects', async () => {
+  it('fires onFailed with TxContext + WalletRejectedError when the wallet rejects', async () => {
     const onFailed = vi.fn()
     const wallet: WalletAdapter = {
       sendTransaction: vi.fn(async () => {
@@ -139,11 +151,15 @@ describe('sendTransactionWithHooks', () => {
       sendTransactionWithHooks({ wallet, request: REQUEST, hooks: { onFailed } }),
     ).rejects.toBeInstanceOf(WalletRejectedError)
     expect(onFailed).toHaveBeenCalledOnce()
-    const [arg] = onFailed.mock.calls[0]!
-    expect(arg).toBeInstanceOf(WalletRejectedError)
+    const [info] = onFailed.mock.calls[0]!
+    expect(info.error).toBeInstanceOf(WalletRejectedError)
+    expect(info.chainId).toBe(369)
+    expect(info.request).toBe(REQUEST)
+    expect(info.hash).toBeUndefined()
+    expect(info.receipt).toBeUndefined()
   })
 
-  it('fires onFailed with the original Error when a non-rejection error is thrown', async () => {
+  it('fires onFailed with TxContext + the original Error when a non-rejection error is thrown', async () => {
     const original = new Error('insufficient funds for gas')
     const onFailed = vi.fn()
     const wallet: WalletAdapter = {
@@ -152,7 +168,11 @@ describe('sendTransactionWithHooks', () => {
     await expect(
       sendTransactionWithHooks({ wallet, request: REQUEST, hooks: { onFailed } }),
     ).rejects.toBe(original)
-    expect(onFailed).toHaveBeenCalledExactlyOnceWith(original)
+    expect(onFailed).toHaveBeenCalledOnce()
+    const [info] = onFailed.mock.calls[0]!
+    expect(info.error).toBe(original)
+    expect(info.chainId).toBe(369)
+    expect(info.request).toBe(REQUEST)
   })
 
   it('coerces a thrown non-Error non-rejection into an Error before firing onFailed', async () => {
@@ -168,8 +188,8 @@ describe('sendTransactionWithHooks', () => {
       expect((err as Error).message).toBe('something exploded')
     }
     expect(onFailed).toHaveBeenCalledOnce()
-    const [arg] = onFailed.mock.calls[0]!
-    expect(arg).toBeInstanceOf(Error)
+    const [info] = onFailed.mock.calls[0]!
+    expect(info.error).toBeInstanceOf(Error)
   })
 
   it('does NOT fire onFailed on success', async () => {
@@ -229,20 +249,28 @@ describe('sendTransactionWithHooks', () => {
   })
 
   describe('onPhase (single-callback shape)', () => {
-    it("fires phase='awaiting-signature' before sendTransaction, then phase='pending' with hash after", async () => {
-      const phases: Array<{ phase: string; hash?: string }> = []
+    it("fires phase='awaiting-signature' with chainId+request, then phase='pending' with chainId+request+hash", async () => {
+      const events: WritePhaseEvent[] = []
       await sendTransactionWithHooks({
         wallet: okWallet('0xabc'),
         request: REQUEST,
-        hooks: { onPhase: (e: WritePhaseEvent) => phases.push({ phase: e.phase, hash: 'hash' in e ? e.hash : undefined }) },
+        hooks: { onPhase: (e: WritePhaseEvent) => { events.push(e) } },
       })
-      expect(phases).toEqual([
-        { phase: 'awaiting-signature', hash: undefined },
-        { phase: 'pending', hash: '0xabc' },
-      ])
+      expect(events).toHaveLength(2)
+      expect(events[0]).toEqual({
+        phase: 'awaiting-signature',
+        chainId: 369,
+        request: REQUEST,
+      })
+      expect(events[1]).toEqual({
+        phase: 'pending',
+        chainId: 369,
+        request: REQUEST,
+        hash: '0xabc',
+      })
     })
 
-    it("fires phase='failed' with the WalletRejectedError when wallet rejects", async () => {
+    it("fires phase='failed' with TxContext + WalletRejectedError when wallet rejects", async () => {
       const onPhase = vi.fn()
       const wallet: WalletAdapter = {
         sendTransaction: vi.fn(async () => {
@@ -253,14 +281,15 @@ describe('sendTransactionWithHooks', () => {
         sendTransactionWithHooks({ wallet, request: REQUEST, hooks: { onPhase } }),
       ).rejects.toBeInstanceOf(WalletRejectedError)
 
-      // Two phases fired: awaiting-signature, then failed.
       expect(onPhase).toHaveBeenCalledTimes(2)
-      const second = onPhase.mock.calls[1]![0] as { phase: string; error: Error }
+      const second = onPhase.mock.calls[1]![0] as Extract<WritePhaseEvent, { phase: 'failed' }>
       expect(second.phase).toBe('failed')
       expect(second.error).toBeInstanceOf(WalletRejectedError)
+      expect(second.chainId).toBe(369)
+      expect(second.request).toBe(REQUEST)
     })
 
-    it('fires both onPhase and the matching named hook on each transition', async () => {
+    it('fires both onPhase and the matching named hook on each transition with the same payload shape', async () => {
       const onAwaitingSignature = vi.fn()
       const onTransactionHash = vi.fn()
       const onPhase = vi.fn()
@@ -269,8 +298,15 @@ describe('sendTransactionWithHooks', () => {
         request: REQUEST,
         hooks: { onAwaitingSignature, onTransactionHash, onPhase },
       })
-      expect(onAwaitingSignature).toHaveBeenCalledOnce()
-      expect(onTransactionHash).toHaveBeenCalledExactlyOnceWith('0xabc')
+      expect(onAwaitingSignature).toHaveBeenCalledExactlyOnceWith({
+        chainId: 369,
+        request: REQUEST,
+      })
+      expect(onTransactionHash).toHaveBeenCalledExactlyOnceWith({
+        chainId: 369,
+        request: REQUEST,
+        hash: '0xabc',
+      })
       expect(onPhase).toHaveBeenCalledTimes(2)
     })
   })
