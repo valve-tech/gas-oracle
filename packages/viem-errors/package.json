@@ -1,0 +1,52 @@
+{
+  "name": "@valve-tech/viem-errors",
+  "version": "0.3.1",
+  "description": "Cause-chain-aware error utilities for viem-based dapps. Detect EIP-1193 user rejections (4001 / class name / message regex), extract decoded custom Solidity error names from anywhere in viem's nested cause chain, map raw RPC/wallet/contract errors to short user-friendly messages with overridable patterns, and route wagmi-style onError sinks through one helper. Pure functions, no runtime dependencies. Part of the valve-tech/evm-toolkit synchronized release line.",
+  "license": "MIT",
+  "homepage": "https://github.com/valve-tech/evm-toolkit/tree/main/packages/viem-errors#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/valve-tech/evm-toolkit.git",
+    "directory": "packages/viem-errors"
+  },
+  "bugs": {
+    "url": "https://github.com/valve-tech/evm-toolkit/issues"
+  },
+  "keywords": [
+    "ethereum",
+    "evm",
+    "viem",
+    "wagmi",
+    "errors",
+    "user-rejection",
+    "eip-1193",
+    "custom-error",
+    "wallet"
+  ],
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p .",
+    "typecheck": "tsc -p . --noEmit",
+    "lint": "eslint src",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "prepare": "yarn build"
+  },
+  "peerDependencies": {
+    "viem": "^2.0.0"
+  }
+}
