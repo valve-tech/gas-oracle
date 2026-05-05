@@ -1,6 +1,6 @@
 {
   "name": "@valve-tech/wallet-adapter",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Framework-agnostic vocabulary + runtime helpers for EVM dapp wallet integration. WalletAdapter interface (sign + send), WriteHookParams full lifecycle (onAwaitingSignature, onTransactionHash, onConfirmed, onFailed, onDropped, onReplaced) plus complementary onPhase(event) discriminated-union shape, sendTransactionWithHooks + awaitReceiptWithHooks helpers that fire the hooks at real boundaries, typed WalletRejectedError + ContractRevertedError for instanceof-discriminated catch, plus TX_STATUS / TX_FLOW / TrackedTx for tx-state UI. Lets SDKs and dapps share one contract instead of each redefining it. Part of the valve-tech/evm-toolkit synchronized release line.",
   "license": "MIT",
   "homepage": "https://github.com/valve-tech/evm-toolkit/tree/main/packages/wallet-adapter#readme",

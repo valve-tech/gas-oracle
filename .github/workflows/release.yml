@@ -112,29 +112,51 @@ jobs:
             echo "✓ $name@$pkg_version"
           done
 
-      # Publish in topological order (chain-source first since the
-      # others may depend on it in future versions). Each publish is
-      # gated on workspace-wide lint/typecheck/test/build above, so a
-      # broken package in any workspace blocks the entire release.
+      # Publish in topological order (deps before dependents — so
+      # wallet-adapter publishes after viem-errors, etc.). Each publish
+      # is gated on workspace-wide lint/typecheck/test/build above, so
+      # a broken package in any workspace blocks the entire release.
       #
-      # Partial-failure recovery: if any individual `npm publish`
-      # fails, the workflow stops with a non-zero exit. Published
-      # packages stay published; unpublished ones can be retried by
-      # bumping the version (`vX.Y.Z+1`) — npm rejects re-publishing
-      # the same version. Mark the failed intermediate version as
+      # `yarn pack` rewrites `workspace:^` cross-package deps to real
+      # semver ranges (`^0.4.0`) inside the tarball's package.json
+      # before `npm publish` uploads it. `npm publish` directly leaves
+      # `workspace:` literally in the manifest, which npm can't resolve
+      # downstream — that breaks consumer installs. The pack-then-
+      # publish dance preserves `--provenance` on the npm side.
+      #
+      # Partial-failure recovery: if any individual publish fails, the
+      # workflow stops with a non-zero exit. Published packages stay
+      # published; unpublished ones can be retried by bumping the
+      # version (`vX.Y.Z+1`) — npm rejects re-publishing the same
+      # version. Mark the failed intermediate version as
       # `*unpublished*` in the per-package CHANGELOG.
 
       - name: Publish @valve-tech/chain-source
-        run: cd packages/chain-source && npm publish --access public --provenance
+        run: |
+          cd packages/chain-source
+          yarn pack --out=/tmp/chain-source.tgz
+          npm publish /tmp/chain-source.tgz --access public --provenance
 
       - name: Publish @valve-tech/viem-errors
-        run: cd packages/viem-errors && npm publish --access public --provenance
+        run: |
+          cd packages/viem-errors
+          yarn pack --out=/tmp/viem-errors.tgz
+          npm publish /tmp/viem-errors.tgz --access public --provenance
 
       - name: Publish @valve-tech/wallet-adapter
-        run: cd packages/wallet-adapter && npm publish --access public --provenance
+        run: |
+          cd packages/wallet-adapter
+          yarn pack --out=/tmp/wallet-adapter.tgz
+          npm publish /tmp/wallet-adapter.tgz --access public --provenance
 
       - name: Publish @valve-tech/gas-oracle
-        run: cd packages/gas-oracle && npm publish --access public --provenance
+        run: |
+          cd packages/gas-oracle
+          yarn pack --out=/tmp/gas-oracle.tgz
+          npm publish /tmp/gas-oracle.tgz --access public --provenance
 
       - name: Publish @valve-tech/tx-tracker
-        run: cd packages/tx-tracker && npm publish --access public --provenance
+        run: |
+          cd packages/tx-tracker
+          yarn pack --out=/tmp/tx-tracker.tgz
+          npm publish /tmp/tx-tracker.tgz --access public --provenance

@@ -6,7 +6,31 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] — 2026-05-04
+
+### Fixed
+
+- **`workspace:^` leak in the published `0.4.0` manifest.** The
+  `0.4.0` tarball shipped with `dependencies: { "@valve-tech/viem-errors":
+  "workspace:^" }` literally inside its `package.json` —
+  `workspace:` is a yarn-only protocol that npm cannot resolve, so
+  `npm install @valve-tech/wallet-adapter@0.4.0` fails for any consumer
+  without a manual resolution override. Root cause: the release
+  workflow used `npm publish` directly, which leaves the manifest
+  unmodified. Fixed by switching the publish step to `yarn pack`
+  (which rewrites `workspace:^` to the real semver range, e.g.
+  `^0.4.1`) followed by `npm publish <tarball>` (which preserves
+  `--provenance`).
+- Consumers on `0.4.0` should bump to `0.4.1` and remove any
+  `resolutions` / `overrides` entry forcing
+  `@valve-tech/wallet-adapter`'s `@valve-tech/viem-errors` dep to a
+  real range.
+
 ## [0.4.0] — 2026-05-04
+
+> **`0.4.0` is broken — use `0.4.1` or later.** See the `0.4.1`
+> entry above for the workspace-protocol leak. `0.4.0` will be
+> deprecated on npm.
 
 ### Added
 

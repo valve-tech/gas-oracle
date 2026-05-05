@@ -1,6 +1,6 @@
 {
   "name": "@valve-tech/tx-tracker",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Per-tx state machine for EVM chains: emits neutral observations (`seen-in-mempool`, `seen-in-block`, `replaced-by`, `vanished-from-block`, `unseen-for-N-blocks`, etc.) so wallet UIs, indexers, and relays can write their own interpretations on top. Three consumption shapes (callback, async iterator, snapshot) over one push-based core. Per-method capability detection — works on HTTP, WS, both, or neither. Part of the valve-tech/evm-toolkit synchronized release line — implementation lands in subsequent 0.3.x releases per docs/tx-tracker-spec.md.",
   "license": "MIT",
   "homepage": "https://github.com/valve-tech/evm-toolkit/tree/main/packages/tx-tracker#readme",
