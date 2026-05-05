@@ -613,7 +613,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@valve-tech/chain-source@workspace:packages/chain-source":
+"@valve-tech/chain-source@workspace:^, @valve-tech/chain-source@workspace:packages/chain-source":
   version: 0.0.0-use.local
   resolution: "@valve-tech/chain-source@workspace:packages/chain-source"
   peerDependencies:
@@ -640,6 +640,8 @@ __metadata:
 "@valve-tech/gas-oracle@workspace:packages/gas-oracle":
   version: 0.0.0-use.local
   resolution: "@valve-tech/gas-oracle@workspace:packages/gas-oracle"
+  dependencies:
+    "@valve-tech/chain-source": "workspace:^"
   peerDependencies:
     viem: ^2.0.0
   languageName: unknown

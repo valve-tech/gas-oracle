@@ -12,19 +12,20 @@
  */
 
 import type { PublicClient } from 'viem'
-
 import {
-  fetchHeadBlockNumber,
-  fetchOracleInputs,
-  type OraclePollInputs,
-} from './transport.js'
+  createChainSource,
+  type BlockResult,
+  type ChainSource,
+  type NormalizedMempool,
+} from '@valve-tech/chain-source'
+
+import { fetchOracleInputs, type OraclePollInputs } from './transport.js'
 import {
   computeBlobBaseFee,
   computeTiers,
   detectTrend,
   flattenTxPool,
 } from './math.js'
-import { normalizeMempool, type NormalizedMempool } from './mempool.js'
 import { blockToSample, mempoolToSamples } from './samples.js'
 import type {
   BlobStats,
@@ -39,17 +40,46 @@ const TREND_WINDOW = 5
 const WAD = 1_000_000_000_000_000_000n
 
 export interface CreateGasOracleOptions {
-  /** viem PublicClient pointed at the upstream RPC for this chain. */
-  client: PublicClient
+  /**
+   * Pre-built `ChainSource`. Preferred for new code: lets multiple
+   * derived views (gas-oracle, tx-tracker, …) share one upstream poll
+   * cycle. The consumer that constructed the source owns its
+   * lifecycle — `oracle.start()` / `oracle.stop()` only attach and
+   * detach the oracle's own subscribers; they do NOT start or stop
+   * the source.
+   *
+   * Exactly one of `source` or `client` must be provided. Passing
+   * both throws at construction.
+   */
+  source?: ChainSource
+  /**
+   * viem PublicClient pointed at the upstream RPC for this chain.
+   * Backward-compat shorthand: when provided, the oracle constructs
+   * a private `ChainSource` internally and owns its lifecycle
+   * (`start()` starts the source, `stop()` stops it). Existing v0.5.x
+   * call sites work unchanged.
+   *
+   * Exactly one of `source` or `client` must be provided.
+   */
+  client?: PublicClient
   /** EVM chain ID. Echoed back in `state.chainId`; not validated. */
   chainId: number
-  /** Polling interval in ms. Default 10_000. */
+  /**
+   * Polling interval in ms. Default 10_000. Only consulted when the
+   * oracle is constructing its own private `ChainSource` (i.e. when
+   * `client` is provided). When a `source` is provided, the source's
+   * own poll interval governs.
+   */
   pollIntervalMs?: number
   /**
    * Optional error sink. Called for each sub-RPC that fails inside a
    * poll cycle. Default behavior is to swallow — the oracle keeps running
    * on partial data. Useful for routing failures into a debug logger or
    * a metrics counter.
+   *
+   * When the oracle owns a private `ChainSource` (i.e. `client` mode),
+   * this sink is forwarded to the source so RPC errors at the upstream
+   * layer surface here too.
    */
   onError?: (method: string, err: unknown) => void
   /**
@@ -125,20 +155,14 @@ export interface CreateGasOracleOptions {
    */
   staleAfter?: number
   /**
-   * When `true` (default), each tick first fires a cheap
-   * `eth_blockNumber` probe. If the head hasn't moved since the
-   * previous tick, the rest of the cycle is skipped — no expensive
-   * `eth_getBlockByNumber(_, true)` / `eth_feeHistory` /
-   * `txpool_content`. The fee landscape can't change without a new
-   * block, so polling faster than block time is wasted RPC.
-   *
-   * For chains with sub-second blocks (some L2s), this is a no-op
-   * because the head moves every tick anyway. For PulseChain (~10s)
-   * and Ethereum (12s) on a 10s poll interval, this collapses ~90%
-   * of ticks down to a single probe call.
-   *
-   * `pollOnce()` always bypasses the gate — explicit out-of-band
-   * polls fire the full cycle.
+   * @deprecated v0.6.0 — block-gated polling now lives in
+   * `@valve-tech/chain-source` itself, via head-probe gating in its
+   * tick. The option is retained for backward compatibility but is a
+   * no-op: passing `false` no longer disables gating, and passing
+   * `true` is the always-on behavior at the source layer. The
+   * efficiency win (skip the expensive full-block fetch when the head
+   * hasn't moved) now benefits every consumer of `ChainSource` — not
+   * just gas-oracle — so the gate moved down a layer.
    */
   blockGatedPolling?: boolean
   /**
@@ -300,7 +324,9 @@ export const reducePollInputs = (input: {
 /**
  * Build a configured oracle. Nothing happens until you call `start()`.
  *
- * @example
+ * Two construction shapes — pick one:
+ *
+ *   // v0.5.x backward-compat: oracle owns a private ChainSource.
  *   import { createPublicClient, http } from 'viem'
  *   import { mainnet } from 'viem/chains'
  *   import { createGasOracle } from '@valve-tech/gas-oracle'
@@ -310,12 +336,37 @@ export const reducePollInputs = (input: {
  *   oracle.subscribe((state) => publishToRedis(state))
  *   oracle.start()
  *
+ *   // v0.6.0+: share a ChainSource with other consumers (e.g. tx-tracker).
+ *   import { createChainSource } from '@valve-tech/chain-source'
+ *
+ *   const source  = createChainSource({ client })
+ *   const oracle  = createGasOracle({ source, chainId: 1 })
+ *   const tracker = createTxTracker({ source, chainId: 1 })  // future
+ *   source.start(); oracle.start(); tracker.start()
+ *
  *   // Later — sub-ms read, no RPC:
  *   const tier = oracle.getState()?.tiers.standard
  */
 export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
-  // Validate at the boundary so misconfigured callers fail fast rather
-  // than producing silently-wrong tier numbers later.
+  // Validate exactly-one of source/client at the boundary. Misconfigured
+  // callers fail fast at construction rather than producing silently
+  // bad behavior at run time.
+  const hasSource = options.source !== undefined
+  const hasClient = options.client !== undefined
+  if (hasSource && hasClient) {
+    throw new Error(
+      'createGasOracle: pass exactly one of `source` or `client`, not both. ' +
+        'Use `source` to share an upstream poll cycle with other consumers; ' +
+        'use `client` for the v0.5.x backward-compat shorthand (oracle constructs a private source).',
+    )
+  }
+  if (!hasSource && !hasClient) {
+    throw new Error(
+      'createGasOracle: pass exactly one of `source` or `client`. ' +
+        'Use `source` to share an upstream poll cycle with other consumers; ' +
+        'use `client` for the v0.5.x backward-compat shorthand.',
+    )
+  }
   if (
     options.priorityFeeDecayCap !== undefined &&
     options.priorityFeeDecayCap !== null
@@ -339,15 +390,35 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
   const retainMempool = options.keepMempoolSnapshot === true
   const pauseWhenIdle = options.pauseWhenIdle !== false
-  const blockGatedPolling = options.blockGatedPolling !== false
   const staleAfter = options.staleAfter ?? 0
   const pauseWhenHidden = options.pauseWhenHidden === true
+  const fetchFeeHistoryEnabled = options.poll?.feeHistory !== false
+  const fetchMempoolEnabled = options.poll?.mempool !== false
+
+  // Adopt or construct the ChainSource. `ownsSource` controls whether
+  // the oracle's start/stop also drives the source's lifecycle — when
+  // a source was provided externally, the consumer manages it.
+  const ownsSource = !hasSource
+  const source: ChainSource =
+    options.source ??
+    createChainSource({
+      // hasClient is true when hasSource is false, by the validation above.
+      client: options.client as PublicClient,
+      pollIntervalMs,
+      poll: options.poll,
+      onError: options.onError,
+    })
 
   let state: GasOracleState | null = null
+  // Cached mempool snapshot powering `getMempoolSnapshot()` — populated
+  // only when `keepMempoolSnapshot` is on.
   let mempoolSnapshot: NormalizedMempool | null = null
-  let timer: ReturnType<typeof setInterval> | null = null
+  // Latest mempool snapshot received from `source.subscribeMempool`.
+  // Used as input to the next reduce regardless of `keepMempoolSnapshot`.
+  let latestMempool: NormalizedMempool | null = null
+  let unsubBlocks: (() => void) | null = null
+  let unsubMempool: (() => void) | null = null
   let staleTimer: ReturnType<typeof setTimeout> | null = null
-  let lastSeenBlock: bigint | null = null
   let started = false
   let visibilityListener: (() => void) | null = null
   const subscribers = new Set<(s: GasOracleState) => void>()
@@ -358,14 +429,10 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
     }
   }
 
-  // The expensive cycle: full RPC fan-out + reduce + notify. Used
-  // unconditionally by `pollOnce()` and as the second step of the
-  // tick when block-gating allows.
-  const fullCycle = async (): Promise<GasOracleState | null> => {
-    const inputs = await fetchOracleInputs(options.client, {
-      onError: options.onError,
-      poll: options.poll,
-    })
+  // Reduce a (block, feeHistory, mempool) tuple into the next state +
+  // notify. Shared between the subscribe-driven path (timer ticks) and
+  // the on-demand path (`pollOnce`).
+  const reduceAndPublish = (inputs: OraclePollInputs): GasOracleState | null => {
     const next = reducePollInputs({
       inputs,
       chainId: options.chainId,
@@ -376,77 +443,80 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
     })
     if (next) {
       state = next
-      lastSeenBlock = next.blockNumber
-      if (retainMempool) {
-        // Re-normalize each cycle. `inputs.txPool` is null when the
-        // mempool RPC is gated/disabled — store an empty snapshot
-        // rather than leaving stale data from a prior cycle around.
-        mempoolSnapshot = normalizeMempool(inputs.txPool)
-      }
       notify(next)
     }
     return next
   }
 
-  // The interval-driven cycle. Cheap-probes the head block first;
-  // skips the expensive bits when the head hasn't moved.
-  const tickCycle = async (): Promise<GasOracleState | null> => {
-    if (blockGatedPolling) {
-      const head = await fetchHeadBlockNumber(
-        options.client,
-        options.onError ? (err) => options.onError!('eth_blockNumber', err) : undefined,
-      )
-      if (head !== null && lastSeenBlock !== null && head === lastSeenBlock) {
-        // Head hasn't moved — no fee-landscape change is possible.
-        // Skip the expensive cycle. State and subscribers are
-        // unchanged from the previous tick.
-        return state
-      }
-      // head === null (probe failed) falls through to fullCycle —
-      // we'd rather pay one extra cycle than block on a flaky
-      // upstream that can't even report `eth_blockNumber`.
-    }
-    return fullCycle()
+  // Block-event handler. Fires once per de-duped block emit from the
+  // source. Fetches feeHistory on demand (so a static head doesn't
+  // re-fetch it), then reduces with the most recent mempool snapshot.
+  const handleBlock = async (block: BlockResult): Promise<void> => {
+    const feeHistory = fetchFeeHistoryEnabled
+      ? await source.getFeeHistory(20, [10, 25, 50, 75, 90])
+      : null
+    reduceAndPublish({ block, feeHistory, txPool: latestMempool })
   }
 
-  const startLoop = (): void => {
-    if (timer !== null) return
-    if (staleTimer !== null) {
-      clearTimeout(staleTimer)
-      staleTimer = null
+  // Mempool-event handler. Caches the latest snapshot for the next
+  // block reduce + powers `getMempoolSnapshot()` when retention is on.
+  const handleMempool = (snapshot: NormalizedMempool): void => {
+    latestMempool = snapshot
+    if (retainMempool) {
+      mempoolSnapshot = snapshot
     }
-    // Fire-and-forget the first cycle so callers don't block on RPC
-    // latency. The interval picks up from there.
-    void tickCycle()
-    timer = setInterval(() => { void tickCycle() }, pollIntervalMs)
   }
 
-  const pauseLoop = (): void => {
-    if (timer !== null) {
-      clearInterval(timer)
-      timer = null
-    }
+  const attachToSource = (): void => {
+    if (unsubBlocks !== null) return
+    unsubBlocks = source.subscribeBlocks((b) => {
+      void handleBlock(b)
+    })
+    unsubMempool = source.subscribeMempool(handleMempool)
+    // Start the source's poll loop when we own it. This is gated on
+    // attach (not on `oracle.start()`) so `pauseWhenIdle` truly
+    // suppresses RPC traffic — no consumers means no polling. Source
+    // start/stop is idempotent so subscribe → unsubscribe → subscribe
+    // cycles are safe.
+    if (ownsSource) source.start()
     if (staleTimer !== null) {
       clearTimeout(staleTimer)
       staleTimer = null
     }
   }
 
-  const scheduleIdlePause = (): void => {
+  const detachFromSource = (): void => {
+    if (unsubBlocks !== null) {
+      unsubBlocks()
+      unsubBlocks = null
+    }
+    if (unsubMempool !== null) {
+      unsubMempool()
+      unsubMempool = null
+    }
+    if (staleTimer !== null) {
+      clearTimeout(staleTimer)
+      staleTimer = null
+    }
+    // Stop the private source when we detach. External sources stay
+    // running — other consumers may still need them.
+    if (ownsSource) source.stop()
+  }
+
+  const scheduleIdleDetach = (): void => {
     if (staleAfter <= 0) {
-      pauseLoop()
+      detachFromSource()
       return
     }
     if (staleTimer !== null) return
     staleTimer = setTimeout(() => {
-      pauseLoop()
+      detachFromSource()
       staleTimer = null
     }, staleAfter)
   }
 
   // Structural shape of the bits of `document` we use — kept narrow
   // so the package doesn't need the DOM lib in tsconfig (`lib: ES2020`).
-  // The runtime check below is the only place this ever matters.
   interface VisibilityDoc {
     hidden: boolean
     addEventListener: (event: 'visibilitychange', listener: () => void) => void
@@ -461,13 +531,13 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
     if (!pauseWhenHidden || !documentRef) return
     const listener = (): void => {
       if (documentRef.hidden) {
-        pauseLoop()
+        detachFromSource()
         return
       }
-      // Tab became visible — resume if we have a reason to (no
-      // subscriber-gating, OR subscribers are present).
+      // Tab became visible — re-attach if we have a reason to (no
+      // subscriber gating, OR subscribers are present).
       if (!pauseWhenIdle || subscribers.size > 0) {
-        startLoop()
+        attachToSource()
       }
     }
     documentRef.addEventListener('visibilitychange', listener)
@@ -488,43 +558,65 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
       if (started) return
       started = true
       setupVisibilityHandling()
-      // Only actually start the loop if (a) we don't gate on
-      // subscribers, OR (b) there's already a subscriber attached
-      // (rare but valid: subscribe before start). Visibility wins
-      // over both — never poll while hidden if pauseWhenHidden is on.
+      // Subscriber + visibility gating: attach our subscribers to the
+      // source only when there's a reason. Source.start() is driven
+      // from inside `attachToSource()` (when ownsSource), so a
+      // pauseWhenIdle oracle with no subscribers issues zero RPCs
+      // beyond the one-time capability probe.
       if (pauseWhenHidden && isHidden()) return
       if (!pauseWhenIdle || subscribers.size > 0) {
-        startLoop()
+        attachToSource()
       }
     },
     stop: () => {
-      pauseLoop()
+      // detachFromSource() also stops the private source when we own
+      // it — see attachToSource for the matching start. External
+      // sources stay running for other consumers.
+      detachFromSource()
       teardownVisibilityHandling()
       state = null
       mempoolSnapshot = null
-      lastSeenBlock = null
+      latestMempool = null
       started = false
     },
     getState: () => state,
     getMempoolSnapshot: () => mempoolSnapshot,
-    // pollOnce explicitly bypasses block-gating — caller asked for a
-    // sample, give them a full one. State/lastSeenBlock are still
-    // updated so the next tick can gate against this.
-    pollOnce: () => fullCycle(),
+    // `pollOnce` forces a fresh reduce regardless of head-probe gating
+    // or block dedup at the source layer. Goes through the source's
+    // on-demand methods rather than `subscribeBlocks` because dedup
+    // would swallow a same-head pollOnce and never fire the subscriber.
+    pollOnce: async () => {
+      const block = await source.getBlock('latest')
+      if (!block) return null
+      const [feeHistory, freshMempool] = await Promise.all([
+        fetchFeeHistoryEnabled
+          ? source.getFeeHistory(20, [10, 25, 50, 75, 90])
+          : Promise.resolve(null),
+        fetchMempoolEnabled
+          ? source.getMempoolSnapshot()
+          : Promise.resolve(null),
+      ])
+      latestMempool = freshMempool
+      if (retainMempool) {
+        mempoolSnapshot = freshMempool
+      }
+      return reduceAndPublish({ block, feeHistory, txPool: freshMempool })
+    },
     subscribe: (cb) => {
       subscribers.add(cb)
-      // 0 → 1 transition: kick the loop awake (or cancel the
-      // stale-after pause that was about to fire).
+      // 0 → 1 transition: re-attach to the source if subscriber-gating
+      // had us detached.
       if (started && pauseWhenIdle && subscribers.size === 1) {
         if (!pauseWhenHidden || !isHidden()) {
-          startLoop()
+          attachToSource()
         }
       }
       return () => {
         subscribers.delete(cb)
-        // n → 0 transition: schedule pause.
+        // n → 0 transition: schedule detach (immediate or after
+        // `staleAfter` window).
         if (started && pauseWhenIdle && subscribers.size === 0) {
-          scheduleIdlePause()
+          scheduleIdleDetach()
         }
       }
     },

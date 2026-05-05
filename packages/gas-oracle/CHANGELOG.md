@@ -5,6 +5,84 @@ All notable changes to `@valve-tech/gas-oracle` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`source?: ChainSource` on `CreateGasOracleOptions`.** New
+  preferred construction shape: build a `ChainSource` once and share
+  it across multiple consumers (gas-oracle, tx-tracker, future
+  derived views). One upstream poll cycle feeds every attached
+  consumer; the consumer that constructed the source owns its
+  lifecycle. `oracle.start()` / `oracle.stop()` only attach and
+  detach the oracle's own subscribers — they do **not** start or
+  stop a source the consumer handed in. See
+  [`docs/tx-tracker-spec.md`](https://github.com/valve-tech/evm-toolkit/blob/main/docs/tx-tracker-spec.md)
+  §3.3 for the design.
+- **`@valve-tech/chain-source` is now a workspace dependency.** The
+  oracle internally consumes ChainSource for its block + mempool
+  streams and on-demand RPC passthroughs.
+
+### Changed
+
+- **`client?` is now optional alongside `source?`; exactly one must
+  be provided.** Existing v0.5.x call sites passing `client` work
+  unchanged — internally the oracle constructs a private
+  `ChainSource` and owns its lifecycle (start/stop is symmetric).
+  Passing both throws at construction. Passing neither throws.
+- **The poll cycle is now subscribe-driven.** Internally the oracle
+  attaches to `source.subscribeBlocks` / `source.subscribeMempool`;
+  on each new block emit it fetches `eth_feeHistory` on demand and
+  reduces. Mempool snapshots arrive via the source's own tick.
+  Consumer-visible state shape and update timing match v0.5.x for
+  the `client` path; the per-tick RPC pattern shifts (see Notes).
+- **Block-gated polling now lives at the source layer.** The
+  efficiency win (skip the expensive full-block fetch when the head
+  hasn't moved) is implemented in `@valve-tech/chain-source`'s tick
+  via head-probe gating, so every consumer benefits — not just
+  gas-oracle.
+
+### Deprecated
+
+- **`CreateGasOracleOptions.blockGatedPolling`** is now a no-op.
+  Block-gated polling is unconditional at the source layer (see
+  Changed); passing `false` no longer disables it, and passing
+  `true` matches the always-on behavior. The option is retained for
+  backward compatibility with v0.5.x call sites and may be removed
+  in a future major.
+
+### Notes
+
+- **Per-tick RPC pattern shift in `client` mode.** v0.5.0 with
+  `blockGatedPolling: true` (default) ran one `eth_blockNumber`
+  probe per tick and fanned out the full cycle (block + feeHistory
+  + mempool) only on head change. The migrated oracle's private
+  source runs one probe + one mempool fetch per tick (mempool is
+  intentionally not gated — txs come and go between blocks), then
+  fetches block + feeHistory on head change. Net effect on a
+  static head: 1 extra `txpool_content` per tick relative to v0.5.0
+  (mempool stats stay fresh between blocks rather than going stale
+  until the head moves). Consumer-visible state shape is identical.
+- **Mempool freshness improved.** Previously, gas-oracle's reducer
+  used the mempool snapshot fetched in the same cycle as the block,
+  with `null` when that fetch failed. The migrated reducer uses
+  the most recent successful mempool snapshot — when the upstream
+  intermittently gates `txpool_content`, the oracle now uses the
+  last good snapshot rather than dropping mempool stats entirely.
+- **`pollOnce` continues to bypass head-probe gating.** It uses
+  `source.getBlock`, `source.getFeeHistory`, and
+  `source.getMempoolSnapshot` directly, so two `pollOnce()` calls
+  on the same head still produce two reduces (matching v0.5.x's
+  "force fresh sample" semantic).
+- **Consumer-visible API is unchanged otherwise.** All other
+  `CreateGasOracleOptions` fields (`pauseWhenIdle`, `staleAfter`,
+  `pauseWhenHidden`, `keepMempoolSnapshot`, `priorityFeeDecayCap`,
+  `priorityModel`, `baseFeeLivenessBlocks`, `poll`) work the same
+  way. Public exports (`fetchOracleInputs`, `fetchHeadBlockNumber`,
+  `normalizeMempool`, etc.) are unchanged — `sampleGasFees` still
+  uses `fetchOracleInputs` for one-shot snapshots without standing
+  up a long-lived source.
+
 ## [0.5.0] — 2026-05-05
 
 ### Notes

@@ -24,7 +24,12 @@ const stubClient = (
     if (result instanceof Error) throw result
     return result
   })
-  return { client: { request } as unknown as PublicClient, request }
+  // `transport` is read structurally by chain-source's capability probe;
+  // a missing transport throws inside `probeSubscribeShape`.
+  return {
+    client: { request, transport: { type: 'http' } } as unknown as PublicClient,
+    request,
+  }
 }
 
 describe('gasOracleActions', () => {
@@ -79,8 +84,15 @@ describe('gasOracleActions', () => {
 
     const actions = gasOracleActions({ chainId: 1, lifecycle: 'lazy' })(client)
 
-    // No polling has happened yet
-    expect(request).not.toHaveBeenCalled()
+    // No polling has happened yet — assert by absence of the cycle
+    // marker (`eth_getBlockByNumber`). Chain-source's eager capability
+    // probe (`txpool_content`, `eth_getTransactionReceipt`) does fire
+    // once at construction unconditionally; that's separate from
+    // polling.
+    const cycleCallsBefore = request.mock.calls.filter(
+      (c) => (c[0] as { method: string }).method === 'eth_getBlockByNumber',
+    ).length
+    expect(cycleCallsBefore).toBe(0)
 
     await actions.getGasTiers()
     // Now we've polled

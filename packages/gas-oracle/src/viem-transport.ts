@@ -206,7 +206,15 @@ export const withGasOracle = (
   // most built-in transports don't require a chain config for request
   // dispatch — chainId validation happens elsewhere.
   const oracleInner = innerTransport({})
-  const oracleClient = { request: oracleInner.request } as Parameters<typeof createGasOracle>[0]['client']
+  // Expose `transport: oracleInner` so chain-source's structural
+  // capability probe (`typeof transport.subscribe === 'function'`)
+  // can see whether the inner transport supports WS subscriptions —
+  // a webSocket() transport carries `subscribe`, http() does not.
+  // Without `transport` here, the probe throws on construction.
+  const oracleClient = {
+    request: oracleInner.request,
+    transport: oracleInner,
+  } as unknown as Parameters<typeof createGasOracle>[0]['client']
   // viem-transport intercepts RPC methods, which is a pull-based
   // access pattern (state read inside the request handler). Default
   // `pauseWhenIdle: false` so the cache stays warm across intercepts
