@@ -58,8 +58,13 @@ const probeSubscribeShape = async (
   try {
     const sub = await transport.subscribe({
       params: ['newHeads'],
+      // No-op stubs: the probe unsubscribes immediately, so neither
+      // callback is ever invoked. Required by the transport's
+      // subscribe contract; ignored at runtime.
+      /* c8 ignore start */
       onData: () => {},
       onError: () => {},
+      /* c8 ignore stop */
     } as unknown as Parameters<typeof transport.subscribe>[0])
     sub.unsubscribe()
     return 'subscription'

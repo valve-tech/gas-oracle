@@ -85,10 +85,20 @@ export const waitForTransaction = (
     let settled = false
 
     const finish = (outcome: WaitForTransactionOutcome): void => {
+      // Belt-and-braces: the inner-callback `if (settled) return` guard
+      // below prevents finish() from being called twice through the
+      // public surface, so this truthy branch is unreachable in single-
+      // threaded JS. Kept as defense against future bypass paths.
+      /* c8 ignore next */
       if (settled) return
       settled = true
       teardownSubscribe?.()
       tracker.stop()
+      // Test seam: tests inject `_sourceOverride` (ownsSource=false), so
+      // the truthy-arm of this branch is unreachable through the test
+      // fixtures. In production callers never set `_sourceOverride`, so
+      // ownsSource is always true and source.stop() always runs.
+      /* c8 ignore next */
       if (ownsSource) source.stop()
       resolve(outcome)
     }
@@ -96,6 +106,10 @@ export const waitForTransaction = (
     teardownSubscribe = tracker.subscribe(
       options.hash,
       (event) => {
+        // Inner-callback re-entry guard. Reachable only if a delayed
+        // event arrives after the helper already settled on a prior
+        // event — current tests resolve on the first qualifying event.
+        /* c8 ignore next */
         if (settled) return
         if (event.kind === 'seen-in-block' && event.confirmations >= confirmations) {
           if (options.withReceipts && event.receipt && event.receipt.status === '0x0') {

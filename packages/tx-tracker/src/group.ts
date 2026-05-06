@@ -176,7 +176,13 @@ export const createTxGroup = (
         if (waiter) {
           waiter({ value: event, done: false })
           if (done) {
+            // Drain any remaining waiters with done after a terminal event.
+            // Single-iterator usage parks at most one waiter at a time, so
+            // this loop body is unreachable through the public API; kept
+            // as belt-and-braces against future code paths that might park
+            // multiple waiters concurrently. Mirrors tracker.ts:1313.
             while (waiters.length > 0) {
+              /* c8 ignore next 4 */
               waiters.shift()!({
                 value: undefined as unknown as TxGroupEvent,
                 done: true,
