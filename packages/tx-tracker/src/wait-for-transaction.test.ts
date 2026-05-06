@@ -21,7 +21,10 @@ import type {
 } from '@valve-tech/chain-source'
 
 import { waitForTransaction } from './wait-for-transaction.js'
-import type { WaitForTransactionInternalOptions } from './wait-for-transaction.js'
+import type {
+  WaitForTransactionInternalOptions,
+  WaitForTransactionOptions,
+} from './wait-for-transaction.js'
 
 // ---------- stub ChainSource ----------
 
@@ -225,12 +228,7 @@ test("'failed' outcome with withReceipts: true and receipt.status === '0x0'", as
     effectiveGasPrice: '0x1',
   }
 
-  const source: StubSource = {
-    ...makeStubSource({ ...DEFAULT_CAPS, receiptByHash: 'available' }),
-    getReceipt: async () => failReceipt,
-  }
-
-  // Need emitBlock/emitMempool wired — rebuild with receipt-capable source
+  // Rebuild with receipt-capable source so we can drive emitBlock alongside getReceipt
   const blockSubs = new Set<(b: BlockResult) => void>()
   const mempoolSubs = new Set<(s: NormalizedMempool) => void>()
   let caps: Capabilities = { ...DEFAULT_CAPS, receiptByHash: 'available' }
