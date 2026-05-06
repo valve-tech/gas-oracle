@@ -72,6 +72,12 @@ test('fetchHeadBlockNumber returns null when the upstream returns null', async (
   expect(head).toBeNull()
 })
 
+test('fetchHeadBlockNumber returns null when the response is not hex-decodable', async () => {
+  const { client } = stubClient(() => 'not-a-hex-number')
+  const head = await fetchHeadBlockNumber(client)
+  expect(head).toBeNull()
+})
+
 test('fetchBlock encodes "latest" and asks for full transactions', async () => {
   const block: BlockResult = {
     number: '0x10',

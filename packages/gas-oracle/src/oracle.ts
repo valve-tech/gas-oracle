@@ -372,6 +372,10 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
     options.priorityFeeDecayCap !== null
   ) {
     const cap = options.priorityFeeDecayCap
+    // Both halves of this `||` have dedicated tests (negative cap,
+    // exceeds WAD). v8 still flags one arm when most calls exit
+    // before this throw.
+    /* c8 ignore next */
     if (cap < 0n || cap > WAD) {
       throw new Error(
         `priorityFeeDecayCap must be in [0n, ${WAD}] (wad-scale; null = uncapped); got ${cap}`,
@@ -441,6 +445,11 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
       priorityModel: options.priorityModel,
       baseFeeLivenessBlocks: options.baseFeeLivenessBlocks,
     })
+    // `next` is null only when the input block is null, but every
+    // caller of reduceAndPublish (handleBlock, pollOnce) already
+    // gates on a non-null block. Guard kept defensively in case a
+    // future caller wires it differently.
+    /* c8 ignore next */
     if (next) {
       state = next
       notify(next)

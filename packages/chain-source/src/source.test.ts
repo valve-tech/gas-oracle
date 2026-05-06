@@ -619,3 +619,31 @@ test('onError fires for sub-RPC failures during poll cycle', async () => {
     onError.mock.calls.some(([method]) => method === 'txpool_content'),
   ).toBe(true)
 })
+
+test('the interval callback fires additional ticks after start', async () => {
+  // Pin the setInterval-callback path: advance time past pollIntervalMs
+  // and verify a second tick ran. The first tick is fired
+  // immediately at start; subsequent ticks come from the interval.
+  let counter = 0
+  const { client, calls } = fakeClient({
+    responses: {
+      eth_getBlockByNumber: () => {
+        counter += 1
+        return sampleBlock('0x' + counter.toString(16))
+      },
+    },
+  })
+  const source = createChainSource({ client, pollIntervalMs: 100 })
+  vi.useFakeTimers()
+  try {
+    source.start()
+    await vi.advanceTimersByTimeAsync(0) // immediate first tick
+    const afterFirst = calls.filter((c) => c.method === 'eth_getBlockByNumber').length
+    await vi.advanceTimersByTimeAsync(150) // crosses interval boundary
+    const afterSecond = calls.filter((c) => c.method === 'eth_getBlockByNumber').length
+    expect(afterSecond).toBeGreaterThan(afterFirst)
+    source.stop()
+  } finally {
+    vi.useRealTimers()
+  }
+})

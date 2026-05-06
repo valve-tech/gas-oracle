@@ -84,6 +84,7 @@ export const appendBlock = (
   // `block.number` before we push, so the comparator never sees
   // equal keys; we return -1 in that arm only to satisfy bigint
   // sort's contract.
+  /* c8 ignore next */
   next.sort((a, b) => (a.number < b.number ? -1 : 1))
   if (next.length > capacityBlocks) {
     next.splice(0, next.length - capacityBlocks)
@@ -160,6 +161,7 @@ export const detectDivergences = (input: {
   // Divergences are unique by `blockNumber` (one entry per ring
   // height), so the comparator never sees equal keys; we return -1
   // in that arm only to satisfy the sort contract.
+  /* c8 ignore next */
   divergences.sort((a, b) => (a.blockNumber < b.blockNumber ? -1 : 1))
   return divergences
 }

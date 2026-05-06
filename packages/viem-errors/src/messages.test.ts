@@ -114,6 +114,19 @@ describe('getUserFriendlyErrorMessage', () => {
       expect(getUserFriendlyErrorMessage(undefined)).toMatch(/something went wrong/i)
     })
   })
+
+  describe('consumer pattern fall-through', () => {
+    it('falls through to default patterns when consumer patterns do not match', () => {
+      // Drives the false-arm of the consumer-patterns iteration:
+      // a consumer pattern is registered but doesn't match `raw`,
+      // so the loop completes without returning and the default
+      // patterns take over.
+      const msg = getUserFriendlyErrorMessage('insufficient funds for gas', {
+        patterns: [{ pattern: /will-not-match/, message: 'unused' }],
+      })
+      expect(msg).toMatch(/insufficient funds/i)
+    })
+  })
 })
 
 describe('DEFAULT_ERROR_PATTERNS', () => {

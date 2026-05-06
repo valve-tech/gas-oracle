@@ -32,6 +32,34 @@ describe('isUserRejectionError', () => {
     expect(isUserRejectionError('User rejected the request')).toBe(true)
   })
 
+  it('returns false for a thrown string that is NOT the rejection phrase', () => {
+    // Drives the false-arm of the string-link rejection check
+    // inside the cause-chain walk: link is a string, doesn't match
+    // the rejection pattern, loop continues to the next link.
+    expect(isUserRejectionError('something else entirely')).toBe(false)
+  })
+
+  it('skips null links in the cause chain without throwing', () => {
+    // Drives the `if (link === null || link === undefined) continue`
+    // guard. An error with `cause: null` produces a null link in
+    // the walk; the iteration must skip it cleanly.
+    const e = Object.assign(new Error('outer'), { cause: null })
+    expect(isUserRejectionError(e)).toBe(false)
+  })
+
+  it('skips undefined links in the cause chain', () => {
+    // Drives the `link === undefined` half of the same OR guard.
+    const e = Object.assign(new Error('outer'), { cause: undefined })
+    expect(isUserRejectionError(e)).toBe(false)
+  })
+
+  it('skips primitive (non-string) links in the cause chain', () => {
+    // Drives the `if (typeof link !== 'object') continue` post-string
+    // guard for primitive types like number / boolean.
+    const e = Object.assign(new Error('outer'), { cause: 42 })
+    expect(isUserRejectionError(e)).toBe(false)
+  })
+
   it('returns false for unrelated errors', () => {
     expect(isUserRejectionError(new Error('insufficient funds for gas'))).toBe(false)
     expect(isUserRejectionError(new Error('execution reverted'))).toBe(false)

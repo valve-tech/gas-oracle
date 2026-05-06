@@ -199,4 +199,21 @@ describe("tipForBlockPosition: kind='aheadOf' / 'behind' (relative targeting)", 
     })
     expect(r.requiredTip).toBe(0n)
   })
+
+  it('matchesIdentifier returns false for address-id queries against samples with no address', () => {
+    // Drives the `if (sample.address === undefined || sample.nonce
+    // === undefined) return false` guard in matchesIdentifier. A
+    // ring sample whose txs lacked from/nonce fields can't satisfy
+    // an address-id query — resolves as "not found" rather than
+    // throwing on the lowercase-comparison.
+    const samples: TipSample[] = [
+      { tip: 100n, gas: 100n, hash: '0xnoid' },
+      { tip: 50n, gas: 100n, hash: '0xother' },
+    ]
+    const result = tipForBlockPosition(samples, {
+      kind: 'aheadOf',
+      tx: { address: '0xanyone', nonce: 0n },
+    })
+    expect(result.pivot).toBeNull()
+  })
 })

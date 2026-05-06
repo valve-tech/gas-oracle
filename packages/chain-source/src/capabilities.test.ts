@@ -122,3 +122,22 @@ test('probeCapabilities routes upstream errors to onError when provided', async 
   expect(onError).toHaveBeenCalled()
   expect(onError.mock.calls.some(([method]) => method === 'txpool_content')).toBe(true)
 })
+
+test('probeCapabilities routes receipt-probe failures to onError', async () => {
+  const onError = vi.fn<(method: string, err: unknown) => void>()
+  const client = stubClient(
+    { type: 'http' },
+    {
+      eth_getTransactionReceipt: () => {
+        throw new Error('method unavailable')
+      },
+    },
+  )
+  const caps = await probeCapabilities(client, { onError })
+  expect(caps.receiptByHash).toBe('unavailable')
+  expect(
+    onError.mock.calls.some(
+      ([method]) => method === 'eth_getTransactionReceipt',
+    ),
+  ).toBe(true)
+})

@@ -401,6 +401,182 @@ describe('gasOracleActions', () => {
     actions.stopGasOracle()
   })
 
+  it('getGasTiers second call returns cached state (no second pollOnce)', async () => {
+    // Drives the `if (cached) return cached` true-arm in ensureState.
+    let blockCalls = 0
+    const { client } = stubClient((method) => {
+      if (method === 'eth_getBlockByNumber') {
+        blockCalls += 1
+        return fakeBlock()
+      }
+      return null
+    })
+    const actions = gasOracleActions({ chainId: 1, lifecycle: 'lazy' })(client)
+    await actions.getGasTiers()
+    const callsAfterFirst = blockCalls
+    await actions.getGasTiers()
+    // Second call hit the cache — no additional block fetch.
+    expect(blockCalls).toBe(callsAfterFirst)
+    actions.stopGasOracle()
+  })
+
+  it('tipForBlockPosition mempool tip clamps to headroom when maxPriority > headroom', async () => {
+    // Drives the `maxPriority < headroom ? maxPriority : headroom`
+    // headroom-side arm: maxPriority bigger than headroom → return
+    // headroom (the cap).
+    const { client } = stubClient((method) => {
+      if (method === 'eth_getBlockByNumber') {
+        return {
+          number: '0x1234',
+          timestamp: '0x660a0000',
+          baseFeePerGas: hex(1_000_000_000n),
+          gasLimit: '0x1c9c380',
+          gasUsed: '0xe4e1c0',
+          transactions: [
+            { maxPriorityFeePerGas: hex(1_000_000_000n), maxFeePerGas: hex(3_000_000_000n), gas: '0x5208', type: '0x2', hash: '0xring' },
+          ],
+        }
+      }
+      if (method === 'txpool_content') {
+        return {
+          pending: {
+            '0xs': {
+              '1': {
+                hash: '0xcapped',
+                from: '0xs',
+                nonce: '0x1',
+                gas: '0x5208',
+                // headroom = maxFeePerGas - baseFee = 2gwei - 1gwei = 1gwei
+                // maxPriority = 5gwei > headroom → clamps to 1gwei
+                maxFeePerGas: hex(2_000_000_000n),
+                maxPriorityFeePerGas: hex(5_000_000_000n),
+                type: '0x2',
+              },
+            },
+          },
+          queued: {},
+        }
+      }
+      return null
+    })
+    const actions = gasOracleActions({
+      chainId: 1,
+      lifecycle: 'lazy',
+      keepMempoolSnapshot: true,
+    })(client)
+    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0 })
+    expect(result.requiredTip).toBeGreaterThan(0n)
+    actions.stopGasOracle()
+  })
+
+  it('throws when poll cycle returns no state (upstream block fetch failure)', async () => {
+    // Drives the `if (!polled) throw` branch in ensureState.
+    const { client } = stubClient((method) => {
+      // Every method returns null — the source's tick fails to get
+      // a block, so reduce returns null, so pollOnce returns null.
+      if (method === 'eth_getBlockByNumber') return null
+      return null
+    })
+    const actions = gasOracleActions({
+      chainId: 1,
+      lifecycle: 'lazy',
+    })(client)
+    await expect(actions.getGasTiers()).rejects.toThrow(/poll cycle returned no state/)
+    actions.stopGasOracle()
+  })
+
+  it('tipForBlockPosition mempool tip clamps to 0 when maxFee equals baseFee', async () => {
+    // Drives the `headroom <= 0n` arm: maxFee equals baseFee → 0
+    // headroom → tip clamps to 0n.
+    const { client } = stubClient((method) => {
+      if (method === 'eth_getBlockByNumber') {
+        return {
+          number: '0x1234',
+          timestamp: '0x660a0000',
+          baseFeePerGas: hex(1_000_000_000n),
+          gasLimit: '0x1c9c380',
+          gasUsed: '0xe4e1c0',
+          transactions: [
+            { maxPriorityFeePerGas: hex(2_000_000_000n), maxFeePerGas: hex(5_000_000_000n), gas: '0x5208', type: '0x2', hash: '0xring' },
+          ],
+        }
+      }
+      if (method === 'txpool_content') {
+        return {
+          pending: {
+            '0xs': {
+              '1': {
+                hash: '0xclamp',
+                from: '0xs',
+                nonce: '0x1',
+                gas: '0x5208',
+                maxFeePerGas: hex(1_000_000_000n), // == baseFee → 0 headroom
+                maxPriorityFeePerGas: hex(2_000_000_000n),
+                type: '0x2',
+              },
+            },
+          },
+          queued: {},
+        }
+      }
+      return null
+    })
+    const actions = gasOracleActions({
+      chainId: 1,
+      lifecycle: 'lazy',
+      keepMempoolSnapshot: true,
+    })(client)
+    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0 })
+    // Ring tx tip wins — mempool clamp tx contributed 0n.
+    expect(result.pivot?.hash).toBe('0xring')
+    actions.stopGasOracle()
+  })
+
+  it('tipForBlockPosition mempool legacy tx with gasPrice <= baseFee clamps to 0', async () => {
+    // Drives the `price > state.baseFee ? price - baseFee : 0n` 0-arm.
+    const { client } = stubClient((method) => {
+      if (method === 'eth_getBlockByNumber') {
+        return {
+          number: '0x1234',
+          timestamp: '0x660a0000',
+          baseFeePerGas: hex(1_000_000_000n),
+          gasLimit: '0x1c9c380',
+          gasUsed: '0xe4e1c0',
+          transactions: [
+            { maxPriorityFeePerGas: hex(2_000_000_000n), maxFeePerGas: hex(5_000_000_000n), gas: '0x5208', type: '0x2', hash: '0xring' },
+          ],
+        }
+      }
+      if (method === 'txpool_content') {
+        return {
+          pending: {
+            '0xs': {
+              '1': {
+                hash: '0xlow-legacy',
+                from: '0xs',
+                nonce: '0x1',
+                gas: '0x5208',
+                gasPrice: hex(500_000_000n), // below baseFee → 0n tip
+                type: '0x0',
+              },
+            },
+          },
+          queued: {},
+        }
+      }
+      return null
+    })
+    const actions = gasOracleActions({
+      chainId: 1,
+      lifecycle: 'lazy',
+      keepMempoolSnapshot: true,
+    })(client)
+    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0 })
+    // Doesn't throw; ring sample wins.
+    expect(result.pivot?.hash).toBe('0xring')
+    actions.stopGasOracle()
+  })
+
   it('tipForBlockPosition with a null mempool falls back to ring samples only', async () => {
     const { client } = stubClient((method) => {
       if (method === 'eth_getBlockByNumber') {

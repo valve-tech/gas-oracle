@@ -596,6 +596,14 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
         const seen = record.status.lastSeenInBlock
         if (!seen) continue
         if (seen.blockNumber !== div.blockNumber) continue
+        // Belt-and-braces hash check: every record at this height
+        // was included when the canonical block had the previous
+        // hash, so this check is normally redundant — but it
+        // future-proofs against a hypothetical future where a
+        // tracker observes the same height through multiple sources
+        // before we reconcile them. Keeps the vanished-from-block
+        // emit honest.
+        /* c8 ignore next */
         if (seen.blockHash !== div.previousBlockHash) continue
         record.status.vanishedAt = {
           previousBlockHash: div.previousBlockHash,
@@ -782,18 +790,17 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
   // Bulk subscription helpers
   // -------------------------------------------------------------
 
-  const runBulkOnBlock = (txs: RawTx[], eventSource: EventSource): void => {
+  /**
+   * Fan-out helpers for both block + mempool ticks. The bulk
+   * registry guarantees that any sub still in `bulkSubs` is alive
+   * (`sub.stop()` does `bulkSubs.delete(id)`), so we don't need
+   * per-iteration "is it stopped?" guards here. The early return
+   * on size===0 keeps the hot path cheap when no bulk subs exist.
+   */
+  const runBulkOnBlock = (txs: RawTx[], _eventSource: EventSource): void => {
     if (bulkSubs.size === 0) return
-    const compiled: CompiledSelector[] = []
-    for (const sub of bulkSubs.values()) {
-      if (!sub.stopped) compiled.push(sub.compiled)
-    }
-    if (compiled.length === 0) return
-    const matches = matchAll(txs, compiled)
-    fanOutBulkMatches(matches, eventSource === 'subscription' ? 'block-poll' : 'block-poll')
-    // (block-side matches always carry 'block-poll' as match
-    // discriminator; the per-hash path that follows reads
-    // capabilities for its own envelope source.)
+    const compiled = [...bulkSubs.values()].map((sub) => sub.compiled)
+    fanOutBulkMatches(matchAll(txs, compiled), 'block-poll')
   }
 
   const runBulkOnMempool = (
@@ -801,14 +808,24 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     _eventSource: EventSource,
   ): void => {
     if (bulkSubs.size === 0) return
-    const compiled: CompiledSelector[] = []
-    for (const sub of bulkSubs.values()) {
-      if (!sub.stopped) compiled.push(sub.compiled)
-    }
-    if (compiled.length === 0) return
+    const compiled = [...bulkSubs.values()].map((sub) => sub.compiled)
     const txs = [...byHash.values()].map((v) => v.tx)
-    const matches = matchAll(txs, compiled)
-    fanOutBulkMatches(matches, 'mempool-snapshot')
+    fanOutBulkMatches(matchAll(txs, compiled), 'mempool-snapshot')
+  }
+
+  /**
+   * Reverse-lookup: given a compiled selector reference, find its
+   * owning bulk sub. The `compiled.selector` reference is the same
+   * object the consumer registered, and every sub in `bulkSubs`
+   * carries it — so a miss here would mean the registry was
+   * mutated mid-fanout, which doesn't happen.
+   */
+  const findBulkSubBySelector = (selector: BulkSelector): BulkSub => {
+    for (const sub of bulkSubs.values()) {
+      if (sub.compiled.selector === selector) return sub
+    }
+    /* c8 ignore next */
+    throw new Error('tx-tracker: invariant violated — selector ref missing from bulkSubs')
   }
 
   const fanOutBulkMatches = (
@@ -816,9 +833,7 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     matchSource: 'mempool-snapshot' | 'block-poll',
   ): void => {
     for (const match of matches) {
-      // Find the bulk sub the compiled selector belongs to.
       const sub = findBulkSubBySelector(match.selector)
-      if (!sub || sub.stopped) continue
       const event: TxMatchEvent = {
         kind: 'matched',
         hash: match.hash,
@@ -838,15 +853,6 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
         sub.autoTrackedUnsubs.set(match.hash, unsub)
       }
     }
-  }
-
-  const findBulkSubBySelector = (
-    selector: BulkSelector,
-  ): BulkSub | null => {
-    for (const sub of bulkSubs.values()) {
-      if (sub.compiled.selector === selector) return sub
-    }
-    return null
   }
 
   // -------------------------------------------------------------
@@ -1037,7 +1043,14 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
       return: () => {
         unsub()
         done = true
+        // The unsub call above triggers the synthetic stopped event
+        // through the same `cb` that drains pending waiters, so by
+        // the time we get here the waiters queue is empty under
+        // normal flow. The drain stays as a belt-and-braces guard
+        // for any future code path that might call return() without
+        // the unsub-driven stopped emit.
         while (waiters.length > 0) {
+          /* c8 ignore next */
           waiters.shift()!({ value: undefined as unknown as TxEvent, done: true })
         }
         return Promise.resolve({ value: undefined as unknown as TxEvent, done: true })

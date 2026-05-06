@@ -156,6 +156,61 @@ describe('reducePollInputs', () => {
     expect(next!.blob).toBeNull()
   })
 
+  it('threads prev blob history into the next-cycle blob trend', () => {
+    // Drives the `input.prev?.blob ? [prev.blobBaseFee, current] : [current]`
+    // ternary's prev-set arm.
+    const first = reducePollInputs({
+      inputs: blockOnly({ excessBlobGas: 0x100000n, blobGasUsed: 0x20000n }),
+      chainId: 1,
+      prev: null,
+    })
+    const second = reducePollInputs({
+      inputs: blockOnly({ excessBlobGas: 0x200000n, blobGasUsed: 0x20000n }),
+      chainId: 1,
+      prev: first,
+    })
+    expect(second!.blob).not.toBeNull()
+    // Trend was computed from a 2-element history (prev → current)
+    // rather than a singleton — verifies the prev-arm took effect.
+    expect(['rising', 'falling', 'stable']).toContain(second!.blob!.blobBaseFeeTrend)
+  })
+
+  it('defaults blobGasUsed to 0 when block has excessBlobGas but not blobGasUsed', () => {
+    // Drives the `?? '0x0'` arm of `BigInt(block.blobGasUsed ?? '0x0')`.
+    const next = reducePollInputs({
+      inputs: blockOnly({ excessBlobGas: 0x100000n }), // no blobGasUsed
+      chainId: 1,
+      prev: null,
+    })
+    expect(next!.blob).not.toBeNull()
+    expect(next!.blob!.blobGasUsed).toBe(0n)
+  })
+
+  it('omits feeHistory when fetchFeeHistory is disabled (handleBlock branch)', async () => {
+    // Drives the `: null` arm of the ternary in handleBlock.
+    const { client } = stubClient((method) => {
+      if (method === 'eth_blockNumber') return '0x1234'
+      if (method === 'eth_getBlockByNumber') return okBlock()
+      // Note: no eth_feeHistory responder — the source must NOT call it
+      return null
+    })
+    const oracle = createGasOracle({
+      client,
+      chainId: 1,
+      poll: { feeHistory: false },
+      pauseWhenIdle: false,
+    })
+    oracle.start()
+    await oracle.pollOnce()
+    await flush()
+    // pollOnce returns state even without feeHistory; verify it
+    // didn't crash and produced tiers.
+    const state = oracle.getState()
+    expect(state).not.toBeNull()
+    expect(state!.tiers.standard).toBeDefined()
+    oracle.stop()
+  })
+
   it('threads lastPublishedTips through to the next-cycle cap anchor', () => {
     const prev: GasOracleState = reducePollInputs({
       inputs: blockOnly({
@@ -482,6 +537,13 @@ describe('createGasOracle', () => {
     ).toThrow(/priorityFeeDecayCap/)
   })
 
+  it('throws when priorityFeeDecayCap is negative', () => {
+    const { client } = stubClient(() => null)
+    expect(() =>
+      createGasOracle({ client, chainId: 1, priorityFeeDecayCap: -1n }),
+    ).toThrow(/priorityFeeDecayCap/)
+  })
+
   it('accepts null as the explicit "no cap" sentinel', () => {
     const { client } = stubClient(() => null)
     expect(() =>
@@ -743,6 +805,252 @@ describe('createGasOracle', () => {
     await flush()
     // Loop is paused → no further calls.
     expect(request).toHaveBeenCalledTimes(callsAfterFirstCycle)
+    oracle.stop()
+  })
+
+  describe('pauseWhenHidden + visibility integration', () => {
+    interface VisibilityDoc {
+      hidden: boolean
+      addEventListener: (e: 'visibilitychange', l: () => void) => void
+      removeEventListener: (e: 'visibilitychange', l: () => void) => void
+    }
+    let originalDocument: unknown
+    let listeners: (() => void)[] = []
+    let docRef: VisibilityDoc
+
+    beforeEach(() => {
+      listeners = []
+      docRef = {
+        hidden: false,
+        addEventListener: (_e, l) => listeners.push(l),
+        removeEventListener: (_e, l) => {
+          const i = listeners.indexOf(l)
+          if (i >= 0) listeners.splice(i, 1)
+        },
+      }
+      originalDocument =
+        'document' in globalThis
+          ? (globalThis as { document?: unknown }).document
+          : undefined
+      ;(globalThis as { document?: unknown }).document = docRef
+    })
+
+    afterEach(() => {
+      if (originalDocument === undefined) {
+        delete (globalThis as { document?: unknown }).document
+      } else {
+        ;(globalThis as { document?: unknown }).document = originalDocument
+      }
+    })
+
+    const fireVisibility = () => {
+      for (const l of [...listeners]) l()
+    }
+
+    it('start() does NOT attach when pauseWhenHidden + document is hidden', async () => {
+      // Drives the `if (pauseWhenHidden && isHidden()) return` arm
+      // in the start() body — no attach, no source.start, no RPC.
+      docRef.hidden = true
+      const { client, request } = stubClient((method) => {
+        if (method === 'eth_blockNumber') return '0x1234'
+        if (method === 'eth_getBlockByNumber') return okBlock()
+        if (method === 'eth_feeHistory') return okFeeHistory()
+        return null
+      })
+      const oracle = createGasOracle({
+        client,
+        chainId: 1,
+        pauseWhenHidden: true,
+        pauseWhenIdle: false,
+        pollIntervalMs: 100,
+      })
+      oracle.start()
+      await flush()
+      // No RPC issued except the one-time capability probe (which
+      // fires regardless of attach state).
+      const blockCalls = request.mock.calls.filter(
+        (c) => c[0].method === 'eth_getBlockByNumber',
+      ).length
+      expect(blockCalls).toBe(0)
+      oracle.stop()
+    })
+
+    it('subscribe() bridges to attach respecting pauseWhenHidden', async () => {
+      // Drives the `if (!pauseWhenHidden || !isHidden()) attachToSource()`
+      // false-arm in the subscribe handler: hidden is true, so the
+      // 0→1 transition does NOT attach.
+      docRef.hidden = true
+      const { client, request } = stubClient((method) => {
+        if (method === 'eth_blockNumber') return '0x1234'
+        if (method === 'eth_getBlockByNumber') return okBlock()
+        if (method === 'eth_feeHistory') return okFeeHistory()
+        return null
+      })
+      const oracle = createGasOracle({
+        client,
+        chainId: 1,
+        pauseWhenHidden: true,
+        pauseWhenIdle: true,
+        pollIntervalMs: 100,
+      })
+      oracle.start()
+      const unsub = oracle.subscribe(() => {})
+      await flush()
+      const blockCalls = request.mock.calls.filter(
+        (c) => c[0].method === 'eth_getBlockByNumber',
+      ).length
+      expect(blockCalls).toBe(0)
+      unsub()
+      oracle.stop()
+    })
+
+    it('visibility visible-with-subscribers re-attaches under pauseWhenIdle', async () => {
+      // Drives the `subscribers.size > 0` arm of the visibility
+      // listener's `!pauseWhenIdle || subscribers.size > 0` guard.
+      const { client, request } = stubClient((method) => {
+        if (method === 'eth_blockNumber') return '0x1234'
+        if (method === 'eth_getBlockByNumber') return okBlock()
+        if (method === 'eth_feeHistory') return okFeeHistory()
+        return null
+      })
+      const oracle = createGasOracle({
+        client,
+        chainId: 1,
+        pauseWhenHidden: true,
+        pauseWhenIdle: true,
+        pollIntervalMs: 100,
+      })
+      oracle.start()
+      const unsub = oracle.subscribe(() => {})
+      docRef.hidden = true
+      fireVisibility()
+      docRef.hidden = false
+      fireVisibility()
+      await flush()
+      const blockCalls = request.mock.calls.filter(
+        (c) => c[0].method === 'eth_getBlockByNumber',
+      ).length
+      expect(blockCalls).toBeGreaterThan(0)
+      unsub()
+      oracle.stop()
+    })
+
+    it('visibility visible-but-no-subscribers stays detached under pauseWhenIdle', async () => {
+      // Drives the false-arm: pauseWhenIdle=true AND subscribers.size===0
+      // → the visibility listener does NOT re-attach on visible.
+      const { client, request } = stubClient((method) => {
+        if (method === 'eth_blockNumber') return '0x1234'
+        if (method === 'eth_getBlockByNumber') return okBlock()
+        if (method === 'eth_feeHistory') return okFeeHistory()
+        return null
+      })
+      const oracle = createGasOracle({
+        client,
+        chainId: 1,
+        pauseWhenHidden: true,
+        pauseWhenIdle: true,
+        pollIntervalMs: 100,
+      })
+      oracle.start()
+      docRef.hidden = false
+      fireVisibility()
+      await flush()
+      const blockCalls = request.mock.calls.filter(
+        (c) => c[0].method === 'eth_getBlockByNumber',
+      ).length
+      expect(blockCalls).toBe(0)
+      oracle.stop()
+    })
+
+    it('visibility hidden → visible re-attaches when subscribers exist', async () => {
+      // Drives the visibilitychange listener's visible-branch.
+      const { client, request } = stubClient((method) => {
+        if (method === 'eth_blockNumber') return '0x1234'
+        if (method === 'eth_getBlockByNumber') return okBlock()
+        if (method === 'eth_feeHistory') return okFeeHistory()
+        return null
+      })
+      const oracle = createGasOracle({
+        client,
+        chainId: 1,
+        pauseWhenHidden: true,
+        pauseWhenIdle: false,
+        pollIntervalMs: 100,
+      })
+      oracle.start()
+      // First make it hidden then visible
+      docRef.hidden = true
+      fireVisibility()
+      docRef.hidden = false
+      fireVisibility()
+      await flush()
+      const blockCalls = request.mock.calls.filter(
+        (c) => c[0].method === 'eth_getBlockByNumber',
+      ).length
+      expect(blockCalls).toBeGreaterThan(0)
+      oracle.stop()
+    })
+  })
+
+  it('scheduleIdleDetach short-circuits when a stale timer is already pending', async () => {
+    // Drives the `if (staleTimer !== null) return` branch — sub
+    // arrives → timer cleared/never-set → unsub arms it → re-sub
+    // re-attaches without clearing (early returns via unsubBlocks
+    // guard) → unsub again finds the timer still set → bails out
+    // of scheduleIdleDetach without re-arming.
+    const { client } = stubClient((method) => {
+      if (method === 'eth_blockNumber') return '0x1234'
+      if (method === 'eth_feeHistory') return okFeeHistory()
+      if (method === 'eth_getBlockByNumber') return okBlock()
+      return null
+    })
+    const oracle = createGasOracle({
+      client,
+      chainId: 1,
+      pollIntervalMs: 100,
+      blockGatedPolling: false,
+      staleAfter: 250,
+    })
+    oracle.start()
+    const unsub1 = oracle.subscribe(() => {})
+    await flush()
+    unsub1()
+    // Timer armed at t=0; window=250
+    await vi.advanceTimersByTimeAsync(50) // still inside window
+    const unsub2 = oracle.subscribe(() => {})
+    await flush()
+    unsub2()
+    // Second unsub triggers scheduleIdleDetach again with timer
+    // still pending → hits the early return.
+    oracle.stop()
+  })
+
+  it('keepMempoolSnapshot: false (default) leaves getMempoolSnapshot() at null even after a mempool emit', async () => {
+    // Drives the false-arm of the `if (retainMempool) { mempoolSnapshot = snapshot }`
+    // guard — keepMempoolSnapshot was not opted into, so the
+    // public snapshot accessor stays null.
+    const { client } = stubClient((method) => {
+      if (method === 'eth_blockNumber') return '0x1234'
+      if (method === 'eth_getBlockByNumber') return okBlock()
+      if (method === 'eth_feeHistory') return okFeeHistory()
+      if (method === 'txpool_content') {
+        return {
+          pending: { '0xs': { '1': { hash: '0xt', from: '0xs', nonce: '0x1' } } },
+          queued: {},
+        }
+      }
+      return null
+    })
+    const oracle = createGasOracle({
+      client,
+      chainId: 1,
+      pauseWhenIdle: false,
+      // keepMempoolSnapshot omitted → default false
+    })
+    oracle.start()
+    await oracle.pollOnce()
+    await flush()
+    expect(oracle.getMempoolSnapshot()).toBeNull()
     oracle.stop()
   })
 

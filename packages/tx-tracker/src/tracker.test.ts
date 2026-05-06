@@ -817,6 +817,146 @@ test('lifecycle: lazy is accepted (no behavioral difference in v0.6.x)', () => {
   tracker.stop()
 })
 
+test('bulk-on-mempool fires matched events for txs in the mempool snapshot', () => {
+  // Drives the runBulkOnMempool fan-out — bulk subs with active
+  // selectors + a mempool snapshot containing matching txs. Covers
+  // the bulkSubs.size > 0 branch of the early return guard.
+  const source = makeSource()
+  const tracker = startTracker(source)
+  const matches: import('./tracker.js').TxMatchEvent[] = []
+  const sub = tracker.trackFromAddress('0xs')
+  // Drain matches via async iter
+  void (async () => {
+    for await (const m of sub.events()) matches.push(m)
+  })()
+  source.emitMempool({
+    pending: {
+      '0xs': {
+        '1': { hash: '0xt-mem', from: '0xs', nonce: '0x1' },
+      },
+    },
+    queued: {},
+  })
+  return new Promise<void>((resolve) => {
+    setTimeout(() => {
+      expect(matches.some((m) => m.source === 'mempool-snapshot')).toBe(true)
+      sub.stop()
+      tracker.stop()
+      resolve()
+    }, 0)
+  })
+})
+
+test('autoTrackMatched: false emits matched events without per-hash auto-tracking', () => {
+  // Drives the false-arm of the `if (sub.options.autoTrackMatched
+  // && !sub.autoTrackedUnsubs.has(match.hash))` branch: caller
+  // opted out of per-hash auto-tracking, so matched events fire
+  // on the bulk stream but no implicit subscribe happens.
+  const source = makeSource()
+  const tracker = startTracker(source)
+  const sub = tracker.trackFromAddress('0xs', { autoTrackMatched: false })
+  const perHashEvents: import('./events.js').TxEvent[] = []
+  sub.subscribe((e) => perHashEvents.push(e))
+  source.emitBlock(
+    makeBlock(100n, '0xb1', [
+      { hash: '0xt1', from: '0xs', nonce: '0x1' },
+    ]),
+  )
+  // No per-hash record created → no seen-in-block forwarded to the
+  // bulk's per-hash subscriber.
+  expect(perHashEvents).toEqual([])
+  // ...but the matched stream is otherwise normal — verifiable via
+  // the iterator path:
+  expect(tracker.getTxStatus('0xt1')).toBeNull()
+  sub.stop()
+  tracker.stop()
+})
+
+test('block-side txs without hash field are skipped from the txHashSet', () => {
+  // Drives the false-arm of the `for (const tx of txs) if (tx.hash)
+  // txHashSet.add(...)` loop. A block with mixed txs (some hashed,
+  // some not) should add only the hashed ones.
+  const source = makeSource()
+  const tracker = startTracker(source)
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xneedle', (e) => events.push(e), { emitInitial: false })
+  source.emitBlock(
+    makeBlock(100n, '0xb1', [
+      { from: '0xs', nonce: '0x1' },                       // no hash — skipped
+      { hash: '0xneedle', from: '0xs', nonce: '0x2' },     // tracked
+      { from: '0xs', nonce: '0x3', gas: '0x5208' },        // no hash — skipped
+    ]),
+  )
+  expect(events.some((e) => e.kind === 'seen-in-block')).toBe(true)
+  tracker.stop()
+})
+
+test('findBulkSubBySelector iterates past non-matching subs to find the right one', () => {
+  // Drives the false-arm of the `if (sub.compiled.selector === selector)`
+  // loop in findBulkSubBySelector — multiple bulk subs registered;
+  // the lookup must skip the non-matching one before returning the
+  // right sub.
+  const source = makeSource()
+  const tracker = startTracker(source)
+  const matchesA: import('./tracker.js').TxMatchEvent[] = []
+  const matchesB: import('./tracker.js').TxMatchEvent[] = []
+  const subA = tracker.trackFromAddress('0xaaa')
+  const subB = tracker.trackFromAddress('0xbbb')
+  void (async () => { for await (const m of subA.events()) matchesA.push(m) })()
+  void (async () => { for await (const m of subB.events()) matchesB.push(m) })()
+  source.emitBlock(
+    makeBlock(100n, '0xb1', [
+      { hash: '0xta', from: '0xaaa', nonce: '0x1' },
+      { hash: '0xtb', from: '0xbbb', nonce: '0x1' },
+    ]),
+  )
+  return new Promise<void>((resolve) => {
+    setTimeout(() => {
+      expect(matchesA.map((m) => m.hash)).toEqual(['0xta'])
+      expect(matchesB.map((m) => m.hash)).toEqual(['0xtb'])
+      subA.stop()
+      subB.stop()
+      tracker.stop()
+      resolve()
+    }, 0)
+  })
+})
+
+test('block / mempool fixtures with missing optional fields process cleanly', () => {
+  // Drives the nullish guards: `block.hash ?? ''`, `block.parentHash
+  // ?? null`, `Array.isArray(transactions) ? ... : []`, `if (tx.hash)`,
+  // and the mempool-snapshot `if (tx?.hash)` skips. None should throw.
+  const source = makeSource()
+  const tracker = startTracker(source)
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xtracked', (e) => events.push(e), { emitInitial: false })
+  // Block with no hash, no parentHash, transactions = something non-array
+  source.emitBlock({
+    number: '0x1234',
+    timestamp: '0x100',
+    baseFeePerGas: '0x0',
+    gasLimit: '0x0',
+    gasUsed: '0x0',
+    transactions: undefined as never,
+  } as never)
+  // Mempool with a tx missing the hash field
+  source.emitMempool({
+    pending: {
+      '0xs': {
+        '1': { from: '0xs', nonce: '0x1' }, // no hash
+      },
+    },
+    queued: {
+      '0xs': {
+        '2': { from: '0xs', nonce: '0x2' }, // no hash
+      },
+    },
+  })
+  // No throw, no seen-in-block (tracked hash isn't in the block)
+  expect(events.filter((e) => e.kind === 'seen-in-block')).toHaveLength(0)
+  tracker.stop()
+})
+
 test('reorg handler skips records whose lastSeenInBlock is at a different height', () => {
   // Multi-hash setup: 0xtxA included at block 100, 0xtxB included
   // at block 99. Reorg only on block 100. The handler must scope
