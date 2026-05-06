@@ -263,4 +263,164 @@ describe('gasOracleActions', () => {
     expect(state.tiers.fast.maxPriorityFeePerGas).toBeGreaterThan(0n)
     actions.stopGasOracle()
   })
+
+  it('tipForBlockPosition folds mempool pending txs into the sample distribution', async () => {
+    // Drives the previously-uncovered mempool→TipSample translation
+    // in viem-actions.ts: the EIP-1559 case (maxFeePerGas + maxPriority),
+    // the legacy gasPrice case, the no-gas skip, and the 0-headroom
+    // clamp.
+    const { client } = stubClient((method) => {
+      if (method === 'eth_getBlockByNumber') {
+        return {
+          number: '0x1234',
+          timestamp: '0x660a0000',
+          baseFeePerGas: hex(1_000_000_000n),
+          gasLimit: '0x1c9c380',
+          gasUsed: '0xe4e1c0',
+          transactions: [
+            { maxPriorityFeePerGas: hex(2_000_000_000n), maxFeePerGas: hex(5_000_000_000n), gas: '0x5208', type: '0x2', hash: '0xring' },
+          ],
+        }
+      }
+      if (method === 'txpool_content') {
+        return {
+          pending: {
+            '0xs1': {
+              '1': {
+                // EIP-1559 path: maxFee + maxPriority both set, healthy headroom
+                hash: '0xmem-1559',
+                from: '0xs1',
+                nonce: '0x1',
+                maxFeePerGas: hex(8_000_000_000n),
+                maxPriorityFeePerGas: hex(3_000_000_000n),
+                gas: '0x5208',
+                type: '0x2',
+              },
+            },
+            '0xs2': {
+              '1': {
+                // Legacy path: gasPrice only
+                hash: '0xmem-legacy',
+                from: '0xs2',
+                nonce: '0x1',
+                gasPrice: hex(4_000_000_000n),
+                gas: '0x5208',
+                type: '0x0',
+              },
+            },
+            '0xs3': {
+              '1': {
+                // 0-headroom: maxFee equals baseFee, tip clamps to 0
+                hash: '0xmem-clamped',
+                from: '0xs3',
+                nonce: '0x1',
+                maxFeePerGas: hex(1_000_000_000n),
+                maxPriorityFeePerGas: hex(2_000_000_000n),
+                gas: '0x5208',
+                type: '0x2',
+              },
+            },
+            '0xs4': {
+              '1': {
+                // gas undefined → skipped entirely
+                hash: '0xmem-nogas',
+                from: '0xs4',
+                nonce: '0x1',
+                gasPrice: hex(9_000_000_000n),
+                type: '0x0',
+              },
+            },
+          },
+          queued: {},
+        }
+      }
+      return null
+    })
+    const actions = gasOracleActions({
+      chainId: 1,
+      lifecycle: 'lazy',
+      keepMempoolSnapshot: true,
+    })(client)
+    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0 })
+    // Must not throw; pivot may be the highest-tip mempool tx (EIP-1559
+    // headroom is min(2gwei priority, 7gwei headroom) = 2gwei) — but
+    // the ring tx tip wins (3 gwei priority). The exact pivot is
+    // distribution-dependent; the assertion is just that the path
+    // completed and returned a sample.
+    expect(result.requiredTip).toBeGreaterThan(0n)
+    expect(result.pivot).not.toBeNull()
+    actions.stopGasOracle()
+  })
+
+  it('tipForBlockPosition treats mempool txs with no fee fields as 0n tip', async () => {
+    // Drives the previously-uncovered `return 0n` branch in the
+    // mempool tip computation — a tx with `gas` set but neither
+    // {maxFee + maxPriority} nor `gasPrice` should not throw and
+    // should appear as a 0-tip sample (consumer policy decides
+    // whether to discard such samples downstream).
+    const { client } = stubClient((method) => {
+      if (method === 'eth_getBlockByNumber') {
+        return {
+          number: '0x1234',
+          timestamp: '0x660a0000',
+          baseFeePerGas: hex(1_000_000_000n),
+          gasLimit: '0x1c9c380',
+          gasUsed: '0xe4e1c0',
+          transactions: [
+            { maxPriorityFeePerGas: hex(2_000_000_000n), maxFeePerGas: hex(5_000_000_000n), gas: '0x5208', type: '0x2', hash: '0xring' },
+          ],
+        }
+      }
+      if (method === 'txpool_content') {
+        return {
+          pending: {
+            '0xs': {
+              '1': {
+                hash: '0xnoFee',
+                from: '0xs',
+                nonce: '0x1',
+                gas: '0x5208',
+                // No maxFeePerGas / maxPriorityFeePerGas / gasPrice
+              },
+            },
+          },
+          queued: {},
+        }
+      }
+      return null
+    })
+    const actions = gasOracleActions({
+      chainId: 1,
+      lifecycle: 'lazy',
+      keepMempoolSnapshot: true,
+    })(client)
+    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0 })
+    // Must not throw — the no-fee mempool tx contributes a 0-tip
+    // sample, and the ring's 2-gwei priority tx wins the rank-0 pivot.
+    expect(result.pivot?.hash).toBe('0xring')
+    actions.stopGasOracle()
+  })
+
+  it('tipForBlockPosition with a null mempool falls back to ring samples only', async () => {
+    const { client } = stubClient((method) => {
+      if (method === 'eth_getBlockByNumber') {
+        return {
+          number: '0x1234',
+          timestamp: '0x660a0000',
+          baseFeePerGas: hex(1_000_000_000n),
+          gasLimit: '0x1c9c380',
+          gasUsed: '0xe4e1c0',
+          transactions: [
+            { maxPriorityFeePerGas: hex(5_000_000_000n), maxFeePerGas: hex(10_000_000_000n), gas: '0x5208', type: '0x2', hash: '0xring' },
+          ],
+        }
+      }
+      if (method === 'txpool_content') return new Error('method not found')
+      return null
+    })
+    const actions = gasOracleActions({ chainId: 1, lifecycle: 'lazy' })(client)
+    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0 })
+    expect(result.pivot?.hash).toBe('0xring')
+    actions.stopGasOracle()
+  })
 })

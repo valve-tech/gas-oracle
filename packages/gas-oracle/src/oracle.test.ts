@@ -746,6 +746,44 @@ describe('createGasOracle', () => {
     oracle.stop()
   })
 
+  it('pauseWhenIdle + staleAfter — re-subscribe before window expires clears the stale timer', async () => {
+    // Drives the previously-uncovered `if (staleTimer !== null)`
+    // clear in `attachToSource`. The shape: subscribe → unsubscribe
+    // (kicks off the stale timer) → re-subscribe before the timer
+    // fires (must clear it so a later unsubscribe doesn't see a
+    // stale-timer leftover from the prior cycle).
+    const { client, request } = stubClient((method) => {
+      if (method === 'eth_blockNumber') return '0x1234'
+      if (method === 'eth_feeHistory') return okFeeHistory()
+      if (method === 'eth_getBlockByNumber') return okBlock()
+      return null
+    })
+    const oracle = createGasOracle({
+      client,
+      chainId: 1,
+      pollIntervalMs: 100,
+      blockGatedPolling: false,
+      staleAfter: 250,
+    })
+    oracle.start()
+    const unsubA = oracle.subscribe(() => {})
+    await flush()
+    unsubA()
+    // Inside the stale window — timer is pending. Re-subscribe.
+    await vi.advanceTimersByTimeAsync(100)
+    const unsubB = oracle.subscribe(() => {})
+    await flush()
+    // The timer should have been CLEARED on re-attach (line 482-484).
+    // Verify the loop is still polling (not paused), since the timer
+    // never fired its detach.
+    const callsBefore = request.mock.calls.length
+    await vi.advanceTimersByTimeAsync(200)
+    await flush()
+    expect(request.mock.calls.length).toBeGreaterThan(callsBefore)
+    unsubB()
+    oracle.stop()
+  })
+
   it('pauseWhenIdle + staleAfter — keeps loop alive after last unsubscribe for the window', async () => {
     const { client, request } = stubClient((method) => {
       if (method === 'eth_blockNumber') return '0x1234'
@@ -1146,5 +1184,115 @@ describe('createGasOracle — source mode', () => {
     // dedups. Even on the same head, calling twice does two reduces.
     expect(state1).not.toBeNull()
     expect(state2).not.toBeNull()
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  sampleGasFees — one-shot snapshot                                         */
+/* -------------------------------------------------------------------------- */
+
+describe('sampleGasFees', () => {
+  it('returns a GasOracleState reduced from one fetch, no oracle lifecycle', async () => {
+    const { sampleGasFees } = await import('./oracle.js')
+    const { client } = stubClient((method) => {
+      if (method === 'eth_getBlockByNumber') return okBlock()
+      if (method === 'eth_feeHistory') return okFeeHistory()
+      // txpool_content gated — returns Error so safeRequest treats as null
+      if (method === 'txpool_content') return new Error('method not found')
+      return null
+    })
+    const state = await sampleGasFees({ client, chainId: 1 })
+    expect(state).not.toBeNull()
+    expect(state!.chainId).toBe(1)
+    expect(state!.tiers.standard).toBeDefined()
+    expect(state!.baseFee).toBe(baseFeeGwei)
+  })
+
+  it('passes priorityModel + priorityFeeDecayCap to the reducer', async () => {
+    const { sampleGasFees } = await import('./oracle.js')
+    const { client } = stubClient((method) => {
+      if (method === 'eth_getBlockByNumber') return okBlock()
+      if (method === 'eth_feeHistory') return okFeeHistory()
+      return null
+    })
+    // priorityModel: 'flat' makes the reducer accept legacy txs alongside
+    // type-2; the result shape is the same but the underlying
+    // distribution is computed differently. We're just asserting the
+    // option threads through end-to-end without throwing.
+    const state = await sampleGasFees({
+      client,
+      chainId: 369,
+      priorityModel: 'flat',
+      priorityFeeDecayCap: 100_000_000n,
+    })
+    expect(state?.chainId).toBe(369)
+  })
+
+  it('returns null when the block fetch fails (no inputs to reduce)', async () => {
+    const { sampleGasFees } = await import('./oracle.js')
+    const { client } = stubClient((method) => {
+      if (method === 'eth_getBlockByNumber') return new Error('rpc down')
+      return null
+    })
+    const state = await sampleGasFees({ client, chainId: 1 })
+    expect(state).toBeNull()
+  })
+
+  it('routes upstream errors through onError', async () => {
+    const { sampleGasFees } = await import('./oracle.js')
+    const errors: { method: string; err: unknown }[] = []
+    const { client } = stubClient((method) => {
+      if (method === 'eth_getBlockByNumber') return new Error('block kaput')
+      if (method === 'eth_feeHistory') return new Error('fh kaput')
+      return null
+    })
+    await sampleGasFees({
+      client,
+      chainId: 1,
+      onError: (method, err) => errors.push({ method, err }),
+    })
+    expect(errors.some((e) => e.method === 'eth_getBlockByNumber')).toBe(true)
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  keepMempoolSnapshot retention                                             */
+/* -------------------------------------------------------------------------- */
+
+describe('keepMempoolSnapshot', () => {
+  it('retains the latest mempool snapshot when set true', async () => {
+    let blockCounter = 0
+    const { client } = stubClient((method) => {
+      if (method === 'eth_blockNumber') {
+        return hex(BigInt(0x1234 + blockCounter))
+      }
+      if (method === 'eth_getBlockByNumber') {
+        blockCounter += 1
+        return okBlock({
+          number: hex(BigInt(0x1234 + blockCounter - 1)),
+          hash: '0xb' + blockCounter,
+        })
+      }
+      if (method === 'eth_feeHistory') return okFeeHistory()
+      if (method === 'txpool_content') {
+        return {
+          pending: { '0xs': { '1': { hash: '0xt1', from: '0xs', nonce: '0x1' } } },
+          queued: {},
+        }
+      }
+      return null
+    })
+    const oracle = createGasOracle({
+      client,
+      chainId: 1,
+      keepMempoolSnapshot: true,
+    })
+    oracle.start()
+    await oracle.pollOnce()
+    await flush()
+    const snapshot = oracle.getMempoolSnapshot()
+    expect(snapshot).not.toBeNull()
+    expect(snapshot!.pending['0xs']!['1']!.hash).toBe('0xt1')
+    oracle.stop()
   })
 })

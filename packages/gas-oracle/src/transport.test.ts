@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { PublicClient } from 'viem'
 
-import { fetchOracleInputs } from './transport.js'
+import { fetchHeadBlockNumber, fetchOracleInputs } from './transport.js'
 
 // Build a stand-in viem PublicClient that records every request and lets
 // each test choose what to return per RPC method. We don't need any of the
@@ -150,5 +150,35 @@ describe('fetchOracleInputs', () => {
     const blockCall = calls.find((c) => c.method === 'eth_getBlockByNumber')
     expect(blockCall).toBeDefined()
     expect(calls).toHaveLength(1)
+  })
+})
+
+describe('fetchHeadBlockNumber', () => {
+  it('returns the decoded head block number when the upstream answers', async () => {
+    const { client } = makeClient(({ method }) =>
+      method === 'eth_blockNumber' ? '0x1234' : null,
+    )
+    expect(await fetchHeadBlockNumber(client)).toBe(0x1234n)
+  })
+
+  it('returns null when the upstream answers null', async () => {
+    const { client } = makeClient(() => null)
+    expect(await fetchHeadBlockNumber(client)).toBeNull()
+  })
+
+  it('returns null when the upstream throws (safeRequest catches)', async () => {
+    const errors: unknown[] = []
+    const { client } = makeClient(() => {
+      throw new Error('rpc unavailable')
+    })
+    expect(
+      await fetchHeadBlockNumber(client, (err) => errors.push(err)),
+    ).toBeNull()
+    expect(errors).toHaveLength(1)
+  })
+
+  it('returns null when the response is not hex-decodable as bigint', async () => {
+    const { client } = makeClient(() => 'not-a-hex-string')
+    expect(await fetchHeadBlockNumber(client)).toBeNull()
   })
 })

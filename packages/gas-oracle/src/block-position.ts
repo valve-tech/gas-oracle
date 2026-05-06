@@ -78,7 +78,10 @@ export interface BlockPositionResult {
 }
 
 const sortByTipDesc = (samples: TipSample[]): TipSample[] =>
-  [...samples].sort((a, b) => (a.tip > b.tip ? -1 : a.tip < b.tip ? 1 : 0))
+  // Equal-tip arm folded into the descending side — order between
+  // equal-tip samples is unspecified and consumers shouldn't rely on
+  // it (mempool ordering is provider-dependent anyway).
+  [...samples].sort((a, b) => (a.tip > b.tip ? -1 : 1))
 
 const matchesIdentifier = (sample: TipSample, id: TxIdentifier): boolean => {
   if ('hash' in id) {

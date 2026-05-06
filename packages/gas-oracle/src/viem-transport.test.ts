@@ -218,4 +218,167 @@ describe('withGasOracle', () => {
     // Idempotent
     expect(() => wrapped.stopGasOracle()).not.toThrow()
   })
+
+  it('formatTier(tier, txType=0) returns only gasPrice', async () => {
+    const { transport } = fakeTransport((method) => {
+      if (method === 'eth_getBlockByNumber') return fakeBlock()
+      return null
+    })
+    const wrapped = withGasOracle(transport, { chainId: 1, lifecycle: 'lazy' })
+    const instance = wrapped({})
+    const result = (await instance.request({
+      method: 'eth_gasFeeEstimate',
+      params: [0],
+    } as never)) as { tiers: Record<string, Record<string, string>> }
+    const slow = result.tiers.slow!
+    expect(slow.gasPrice).toBeDefined()
+    expect(slow.maxFeePerGas).toBeUndefined()
+    expect(slow.maxPriorityFeePerGas).toBeUndefined()
+    wrapped.stopGasOracle()
+  })
+
+  it('formatTier(tier, txType=1) also returns only gasPrice (legacy access-list)', async () => {
+    const { transport } = fakeTransport((method) => {
+      if (method === 'eth_getBlockByNumber') return fakeBlock()
+      return null
+    })
+    const wrapped = withGasOracle(transport, { chainId: 1, lifecycle: 'lazy' })
+    const instance = wrapped({})
+    const result = (await instance.request({
+      method: 'eth_gasFeeEstimate',
+      params: [1],
+    } as never)) as { tiers: Record<string, Record<string, string>> }
+    expect(result.tiers.slow!.gasPrice).toBeDefined()
+    expect(result.tiers.slow!.maxFeePerGas).toBeUndefined()
+    wrapped.stopGasOracle()
+  })
+
+  it('formatTier(tier, txType=2) returns only maxFeePerGas + maxPriorityFeePerGas', async () => {
+    const { transport } = fakeTransport((method) => {
+      if (method === 'eth_getBlockByNumber') return fakeBlock()
+      return null
+    })
+    const wrapped = withGasOracle(transport, { chainId: 1, lifecycle: 'lazy' })
+    const instance = wrapped({})
+    const result = (await instance.request({
+      method: 'eth_gasFeeEstimate',
+      params: [2],
+    } as never)) as { tiers: Record<string, Record<string, string>> }
+    const slow = result.tiers.slow!
+    expect(slow.maxFeePerGas).toBeDefined()
+    expect(slow.maxPriorityFeePerGas).toBeDefined()
+    expect(slow.gasPrice).toBeUndefined()
+    wrapped.stopGasOracle()
+  })
+
+  it('formatTier(tier, txType=3) returns 1559 fields plus maxFeePerBlobGas', async () => {
+    const blockWithBlob = () => ({
+      number: '0x1234',
+      timestamp: '0x660a0000',
+      baseFeePerGas: hex(1_000_000_000n),
+      gasLimit: '0x1c9c380',
+      gasUsed: '0xe4e1c0',
+      excessBlobGas: hex(393216n),
+      blobGasUsed: hex(131072n),
+      transactions: [
+        { maxPriorityFeePerGas: hex(2_000_000_000n), maxFeePerGas: hex(5_000_000_000n), gas: '0x5208', type: '0x2' },
+      ],
+    })
+    const { transport } = fakeTransport((method) => {
+      if (method === 'eth_getBlockByNumber') return blockWithBlob()
+      return null
+    })
+    const wrapped = withGasOracle(transport, { chainId: 1, lifecycle: 'lazy' })
+    const instance = wrapped({})
+    const result = (await instance.request({
+      method: 'eth_gasFeeEstimate',
+      params: [3],
+    } as never)) as {
+      tiers: Record<string, Record<string, string>>
+      blobBaseFee?: string
+    }
+    const slow = result.tiers.slow!
+    expect(slow.maxFeePerGas).toBeDefined()
+    expect(slow.maxPriorityFeePerGas).toBeDefined()
+    expect(slow.maxFeePerBlobGas).toBeDefined()
+    expect(result.blobBaseFee).toBeDefined()
+    wrapped.stopGasOracle()
+  })
+
+  it('formatTier(tier, txType=3) falls back to 0 when the tier has no blob fee', async () => {
+    // Drives the `?? 0n` arm of `maxFeePerBlobGas: toHex(tier.maxFeePerBlobGas ?? 0n)`
+    // — a type-3 query against a chain with no blob activity (no
+    // excessBlobGas / blobGasUsed in the block) means state.tiers
+    // carries `maxFeePerBlobGas: null`. The intercept must still
+    // satisfy the type-3 contract by returning a hex-encoded zero
+    // rather than failing or omitting the field.
+    const { transport } = fakeTransport((method) => {
+      if (method === 'eth_getBlockByNumber') return fakeBlock()  // no blob fields
+      return null
+    })
+    const wrapped = withGasOracle(transport, { chainId: 1, lifecycle: 'lazy' })
+    const instance = wrapped({})
+    const result = (await instance.request({
+      method: 'eth_gasFeeEstimate',
+      params: [3],
+    } as never)) as { tiers: Record<string, Record<string, string>> }
+    const slow = result.tiers.slow!
+    expect(slow.maxFeePerBlobGas).toBe('0x0')
+    wrapped.stopGasOracle()
+  })
+
+  it('formatTier without txType param omits blob fee when state.tiers has none', async () => {
+    // No-type fallback path's `if (tier.maxFeePerBlobGas !== null)`
+    // should be false when blob fee is null — the field isn't
+    // included at all (vs. the type-3 path which always includes it
+    // with a zero fallback).
+    const { transport } = fakeTransport((method) => {
+      if (method === 'eth_getBlockByNumber') return fakeBlock()  // no blob
+      return null
+    })
+    const wrapped = withGasOracle(transport, { chainId: 1, lifecycle: 'lazy' })
+    const instance = wrapped({})
+    const result = (await instance.request({
+      method: 'eth_gasFeeEstimate',
+      params: [],
+    } as never)) as { tiers: Record<string, Record<string, string>> }
+    const slow = result.tiers.slow!
+    expect(slow.maxFeePerBlobGas).toBeUndefined()
+    wrapped.stopGasOracle()
+  })
+
+  it('formatTier without txType param includes blob fee when state.tiers has it', async () => {
+    // No-type fallback path that conditionally adds maxFeePerBlobGas
+    // when the tier carries one (uncovered branch in tierToFeeFields).
+    const blockWithBlob = () => ({
+      number: '0x1234',
+      timestamp: '0x660a0000',
+      baseFeePerGas: hex(1_000_000_000n),
+      gasLimit: '0x1c9c380',
+      gasUsed: '0xe4e1c0',
+      excessBlobGas: hex(393216n),
+      blobGasUsed: hex(131072n),
+      transactions: [
+        { maxPriorityFeePerGas: hex(2_000_000_000n), maxFeePerGas: hex(5_000_000_000n), gas: '0x5208', type: '0x2' },
+      ],
+    })
+    const { transport } = fakeTransport((method) => {
+      if (method === 'eth_getBlockByNumber') return blockWithBlob()
+      return null
+    })
+    const wrapped = withGasOracle(transport, { chainId: 1, lifecycle: 'lazy' })
+    const instance = wrapped({})
+    const result = (await instance.request({
+      method: 'eth_gasFeeEstimate',
+      params: [], // no txType — fallback path
+    } as never)) as { tiers: Record<string, Record<string, string>> }
+    const slow = result.tiers.slow!
+    // The fallback returns everything available — gasPrice + 1559 +
+    // blob fee when present.
+    expect(slow.gasPrice).toBeDefined()
+    expect(slow.maxFeePerGas).toBeDefined()
+    expect(slow.maxPriorityFeePerGas).toBeDefined()
+    expect(slow.maxFeePerBlobGas).toBeDefined()
+    wrapped.stopGasOracle()
+  })
 })

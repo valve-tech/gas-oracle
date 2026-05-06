@@ -479,10 +479,15 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
     // start/stop is idempotent so subscribe → unsubscribe → subscribe
     // cycles are safe.
     if (ownsSource) source.start()
-    if (staleTimer !== null) {
-      clearTimeout(staleTimer)
-      staleTimer = null
-    }
+    // Note: no need to clear `staleTimer` here. The only path that
+    // sets a non-null `staleTimer` is `scheduleIdleDetach` (called
+    // when the last subscriber leaves), and that path leaves
+    // `unsubBlocks !== null`. So a re-subscribe entering this
+    // function early-returns at the `unsubBlocks !== null` guard
+    // above before reaching this point. Every other path that
+    // crosses an attach/detach boundary (timer-driven detach,
+    // visibility-driven detach, oracle.stop, scheduleIdleDetach
+    // with staleAfter <= 0) clears the timer in `detachFromSource`.
   }
 
   const detachFromSource = (): void => {
@@ -510,8 +515,9 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
     }
     if (staleTimer !== null) return
     staleTimer = setTimeout(() => {
+      // detachFromSource already nullifies staleTimer; no need to
+      // do it explicitly here.
       detachFromSource()
-      staleTimer = null
     }, staleAfter)
   }
 

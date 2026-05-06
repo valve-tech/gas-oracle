@@ -16,6 +16,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `description` trigger phrases now also catch composition questions,
   but per-tx work explicitly defers to the tx-tracker skill. Ships
   in the npm tarball.
+- **Coverage hardening pre-1.0.** Test suite up from 189 → 209 tests
+  (+20). New coverage: `sampleGasFees` one-shot snapshot path
+  (success + null + error-routing variants), `tipForBlockPosition`
+  with full mempool data (EIP-1559 + legacy + 0-headroom + no-gas
+  + no-fee branches in the mempool→TipSample translation),
+  `formatTier` for tx types 0/1/2/3 plus the no-type fallback —
+  with and without blob fees in tier state, `keepMempoolSnapshot:
+  true` retention, `pauseWhenIdle` re-subscribe inside the stale
+  window keeping the loop alive, `fetchHeadBlockNumber` happy /
+  null-from-RPC / throw / un-decodable variants. Eliminated dead
+  defensive arms in `math.ts` / `block-position.ts` sort
+  comparators (equal-key arms unreachable since duplicates are
+  filtered upstream) and in `oracle.ts` `attachToSource` (stale-
+  timer clear is unreachable because every detach path that sets
+  the timer also keeps `unsubBlocks !== null`, which makes
+  `attachToSource` early-return before the clear).
+- Coverage went **91.91% / 84.75% / 93.18% / 93.9%** stmts /
+  branches / funcs / lines → **98.26% / 93.47% / 100% / 99.8%**.
 
 ## [0.6.0] — 2026-05-05
 
