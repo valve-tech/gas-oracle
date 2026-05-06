@@ -115,6 +115,9 @@ export type { BulkMatchPayload, CompiledSelector } from './selectors.js'
 
 export { createTxGroup } from './group.js'
 
+export { watchTransaction } from './watch-transaction.js'
+export type { WatchTransactionOptions } from './watch-transaction.js'
+
 export {
   buildGroupComplete,
   buildGroupFailed,
