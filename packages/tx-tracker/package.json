@@ -34,7 +34,9 @@
   },
   "files": [
     "dist",
+    "skills",
     "README.md",
+    "AGENTS.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
@@ -45,6 +47,9 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "prepare": "yarn build"
+  },
+  "dependencies": {
+    "@valve-tech/chain-source": "workspace:^"
   },
   "peerDependencies": {
     "viem": "^2.0.0"

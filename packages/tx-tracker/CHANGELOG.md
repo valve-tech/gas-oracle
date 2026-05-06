@@ -6,6 +6,125 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Per-tx state machine** (`createTxTracker`) consuming a
+  `ChainSource` for upstream block + mempool signals. Three
+  consumption shapes over one push-based core: `getTxStatus(hash)`
+  for the cached snapshot, `subscribe(hash, cb)` for callback-style,
+  and `track(hash)` for the async-iterator shape — all three back
+  onto the same internal stream so they see consistent state.
+- **`TxEvent` discriminated union** (spec §6) with neutral
+  observation kinds: `started`, `seen-in-mempool`, `left-mempool`,
+  `seen-in-block`, `vanished-from-block`, `replaced-by`,
+  `unseen-for-N-blocks`, `signal-degraded`, `signal-recovered`,
+  `stopped`. Every event carries an envelope (`hash`, `chainId`,
+  `source`, `at: { blockNumber, timestamp }`) so consumers can
+  apply policy (`'confirmed'`, `'stuck'`, etc.) in their own UX
+  voice without the tracker prejudging.
+- **`TxTrackerStore` interface + `createInMemoryStore` default**
+  (spec §9, §10). Block-unit retention (`retentionBlocks: 64` by
+  default — reorg safety is a depth invariant, not a wall-clock
+  invariant), bounded per-hash audit log (`eventLogCapacity: 256`
+  by default) for catch-up replay.
+- **Reorg detector** (`detectDivergences`, spec §12) — pure function
+  over `BlockSample[]` that flags same-height different-hash
+  divergences within `reorgDepthBlocks` (default 12). Ring is
+  conservative about heights with no canonical entry — a partial
+  canonical sequence does not nuke unrelated ring entries.
+- **Bulk subscriptions** (spec §11): `trackFromAddress`,
+  `trackToAddress`, `trackPredicate`. Auto-tracks matched hashes
+  by default (`autoTrackMatched: true`) so the per-hash event
+  stream is available too. Capped at `maxBulkSubscriptions: 16`.
+- **Capability disclosure** — `tracker.capabilities()` forwards the
+  source's snapshot. `signal-degraded` / `signal-recovered` events
+  fire on every tracked hash when source-level capability
+  transitions cross authority boundaries.
+- **Replacement detection** — caches `(from, nonce)` on first
+  observation and emits `replaced-by` when a different hash with
+  the same identity appears (mempool: `replacementBlockNumber: null`;
+  block: filled-in block number).
+- **`subscribeAll(cb)`** — global stream of every event the tracker
+  emits, useful for indexers piping to a single sink.
+- **`AGENTS.md`** + **`skills/tx-tracker-integration/SKILL.md`** for AI
+  agents working in downstream projects that import the package. Both
+  ship in the npm tarball; the SKILL.md trigger phrases catch
+  "track this transaction," "watch tx hash," "stuck transaction," and
+  composition questions with `@valve-tech/gas-oracle`.
+
+### Changed
+
+- **Coverage hardening pre-1.0.** Eliminated dead defensive branches
+  in `reorg.ts` (sort-comparator equal-key arms unreachable after
+  the dedup `filter`; `?? 0n` defaults unreachable after the empty-
+  array early return). Tightened `capabilityRank`'s input type from
+  `string` to a `CapabilityValue` union literal so the switch is
+  exhaustive without a default arm.
+- **Test suite up from 75 → 95 tests** (+20). New coverage:
+  `trackToAddress`, per-subscription `lostSignalPolicy` overrides,
+  durable-subscription persistence (with stub stores), predicate-
+  selector + `durable: true` warning, store.appendEvent / store.put
+  failure routing through `onError`, bad-block-number handling,
+  async iterator queue-vs-waiter ordering and early-break cleanup,
+  bulk async iterator drain via `sub.stop()`, multi-sub-on-same-hash
+  cleanup semantics, idempotent `stop` / `unsub` / `sub.stop`,
+  reorg handler skipping records without `lastSeenInBlock`,
+  `findReplacement` raw-nonce fallback when `BigInt()` throws,
+  `lifecycle: 'lazy'` accepts-the-option contract.
+- Coverage went **89.23% / 78.59% / 92.13% / 91.84%** stmts / branches
+  / funcs / lines → **96.13% / 88.93% / 98.87% / 97.61%**, then to
+  **97.22% / 92.7% / 98.9% / 98.12%** after the per-record decision
+  logic was extracted into pure functions (see "Refactor" below).
+
+### Refactor
+
+- **Per-record decision logic extracted from `tracker.ts` into a new
+  pure module `observations.ts`.** The previous shape — two giant
+  closures inside `onBlock` / `onMempool` mutating shared state and
+  emitting events as a side effect — was a pile of conditionals that
+  could only be tested by spinning up the full state machine through
+  a stub source. Now `decideBlockObservation` and
+  `decideMempoolObservation` are pure functions: literal inputs in,
+  `{ events, statusPatch, identityPatch, inMempoolPatch }` out. The
+  orchestrator in `tracker.ts` shrank to "compute envelope, loop
+  records, call decision fn, merge patch, emit events." Same shape
+  as the rest of the toolkit (`reducePollInputs` pure / poll loop
+  stateful in gas-oracle; math pure / source stateful in chain-source).
+  - **`observations.ts` lands at 100% statements / 100% branches**
+    (67/67 stmts, 55/55 branches) covered by 33 fixture-driven unit
+    tests in `observations.test.ts`. Each per-record decision arm
+    has a dedicated test with literal inputs — no async, no stubs,
+    no shared state.
+  - `tracker.ts` shrank from 374 statements → 344 (the extracted
+    code is gone) and is now mostly orchestration; its branch
+    coverage rose from 86.69% → 88.75%.
+  - `findReplacement` (closure-based) replaced with pure
+    `findReplacementInMempool(snapshot, identity, originalHash)`.
+    `cacheIdentityFromTx` (mutation-based) replaced with pure
+    `cacheIdentity(current, tx)` returning a patch.
+  - **No behavior change.** All 95 pre-refactor integration tests
+    continue to pass unchanged; the refactor is internal-only and
+    the public API surface is identical.
+  - Tracker test suite: 95 → 133 (+38: 33 from `observations.test.ts`
+    plus 5 new tracker integration tests covering reorg height-mismatch
+    skip and async-iterator multi-waiter drain paths).
+
+### Notes
+
+- Implements spec §5–§12 minus the `'receipt-poll-fallback'`
+  lostSignalPolicy strategy (the type is accepted; the runtime
+  falls back to `'emit-uncertain'` and a follow-up PR adds the
+  per-block receipt fetch path).
+- Predicate bulk selectors are silently non-durable per spec §13.2
+  (closures don't survive a process boundary). The tracker logs a
+  warning via `onError` when a `predicate` selector is registered
+  with `durable: true` and persists everything else about the
+  selector.
+- `gas-oracle` and `tx-tracker` remain siblings — neither imports
+  the other; both consume `@valve-tech/chain-source` directly.
+
 ## [0.6.0] — 2026-05-05
 
 ### Notes

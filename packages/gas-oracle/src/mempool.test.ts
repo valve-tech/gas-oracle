@@ -181,4 +181,14 @@ describe('findInMempool', () => {
   it('routes address+nonce queries through findByAddressNonce', () => {
     expect(findInMempool(pool, { address: aaaa, nonce: 3 })?.tx.hash).toBe('0xpending3')
   })
+
+  it('returns null when pool has no pending OR no queued bucket (searchSubpool guard)', () => {
+    // Drives the `if (!subpool) return null` guard in searchSubpool.
+    // A malformed snapshot lacking either bucket key still
+    // resolves cleanly to null instead of throwing.
+    const noPending = { queued: {} } as unknown as Parameters<typeof findByHash>[0]
+    expect(findByHash(noPending, '0xanything')).toBeNull()
+    const noQueued = { pending: {} } as unknown as Parameters<typeof findByHash>[0]
+    expect(findByHash(noQueued, '0xanything')).toBeNull()
+  })
 })

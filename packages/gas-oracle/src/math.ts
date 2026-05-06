@@ -83,7 +83,9 @@ export const computePercentiles = (sorted: bigint[]): TipPercentiles => {
 export const sortedTips = (txs: RawTx[], baseFee: bigint): bigint[] =>
   txs
     .map((tx) => effectiveTip(tx, baseFee))
-    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+    // Equal-key arm is fine to fold into the >= side — the result is
+    // a sorted list, not a stable sort by identity.
+    .sort((a, b) => (a < b ? -1 : 1))
 
 /**
  * Classify a base-fee history as rising, falling, or stable. Threshold

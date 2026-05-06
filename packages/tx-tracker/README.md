@@ -1,10 +1,5 @@
 # @valve-tech/tx-tracker
 
-> **Status: stub (v0.0.1).** This package is a name reservation. The
-> implementation lands in v0.1.0. See
-> [`docs/tx-tracker-spec.md`](https://github.com/valve-tech/evm-toolkit/blob/main/docs/tx-tracker-spec.md)
-> for the full design contract.
-
 Per-tx state machine for EVM chains. Emits **neutral observations** —
 `seen-in-mempool`, `seen-in-block`, `replaced-by`, `vanished-from-block`,
 `unseen-for-N-blocks`, `signal-degraded`, `signal-recovered`, `stopped` —
@@ -12,8 +7,11 @@ so wallet UIs, indexers, and relays can write their own interpretations
 on top. The package itself never says "confirmed" or "stuck"; it gives
 you the data to decide.
 
+See
+[`docs/tx-tracker-spec.md`](https://github.com/valve-tech/evm-toolkit/blob/main/docs/tx-tracker-spec.md)
+for the full design contract.
+
 ```ts
-// v0.1.0+ shape (not yet implemented):
 import { createChainSource } from '@valve-tech/chain-source'
 import { createTxTracker } from '@valve-tech/tx-tracker'
 
@@ -50,6 +48,15 @@ adapters (callback / async iterator / snapshot).
 ```bash
 yarn add @valve-tech/tx-tracker @valve-tech/chain-source viem
 ```
+
+## For AI agents
+
+This package ships an [`AGENTS.md`](AGENTS.md) reference and a
+[`skills/`](skills/) directory for Claude Code / Cursor skill files
+shipped in the npm tarball. After install, both are reachable at:
+
+- `node_modules/@valve-tech/tx-tracker/AGENTS.md`
+- `node_modules/@valve-tech/tx-tracker/skills/tx-tracker-integration/SKILL.md`
 
 ## License
 

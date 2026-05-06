@@ -372,6 +372,10 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
     options.priorityFeeDecayCap !== null
   ) {
     const cap = options.priorityFeeDecayCap
+    // Both halves of this `||` have dedicated tests (negative cap,
+    // exceeds WAD). v8 still flags one arm when most calls exit
+    // before this throw.
+    /* c8 ignore next */
     if (cap < 0n || cap > WAD) {
       throw new Error(
         `priorityFeeDecayCap must be in [0n, ${WAD}] (wad-scale; null = uncapped); got ${cap}`,
@@ -441,6 +445,11 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
       priorityModel: options.priorityModel,
       baseFeeLivenessBlocks: options.baseFeeLivenessBlocks,
     })
+    // `next` is null only when the input block is null, but every
+    // caller of reduceAndPublish (handleBlock, pollOnce) already
+    // gates on a non-null block. Guard kept defensively in case a
+    // future caller wires it differently.
+    /* c8 ignore next */
     if (next) {
       state = next
       notify(next)
@@ -479,10 +488,15 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
     // start/stop is idempotent so subscribe → unsubscribe → subscribe
     // cycles are safe.
     if (ownsSource) source.start()
-    if (staleTimer !== null) {
-      clearTimeout(staleTimer)
-      staleTimer = null
-    }
+    // Note: no need to clear `staleTimer` here. The only path that
+    // sets a non-null `staleTimer` is `scheduleIdleDetach` (called
+    // when the last subscriber leaves), and that path leaves
+    // `unsubBlocks !== null`. So a re-subscribe entering this
+    // function early-returns at the `unsubBlocks !== null` guard
+    // above before reaching this point. Every other path that
+    // crosses an attach/detach boundary (timer-driven detach,
+    // visibility-driven detach, oracle.stop, scheduleIdleDetach
+    // with staleAfter <= 0) clears the timer in `detachFromSource`.
   }
 
   const detachFromSource = (): void => {
@@ -510,8 +524,9 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
     }
     if (staleTimer !== null) return
     staleTimer = setTimeout(() => {
+      // detachFromSource already nullifies staleTimer; no need to
+      // do it explicitly here.
       detachFromSource()
-      staleTimer = null
     }, staleAfter)
   }
 

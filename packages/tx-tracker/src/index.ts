@@ -1,15 +1,112 @@
 /**
- * @valve-tech/tx-tracker — placeholder for v0.0.1.
+ * `@valve-tech/tx-tracker` — per-tx state machine for EVM chains.
  *
- * The implementation lands in v0.1.0. This stub claims the npm name
- * and documents the planned shape so consumers reading the package
- * via `npm view` know what it is.
+ * Emits **neutral observations** (`seen-in-mempool`, `seen-in-block`,
+ * `replaced-by`, `vanished-from-block`, `unseen-for-N-blocks`,
+ * `signal-degraded`, `signal-recovered`, `stopped`) so wallet UIs,
+ * indexers, and relays can write their own interpretations on top.
+ * The tracker itself never says "confirmed" or "stuck"; it gives
+ * you the data to decide.
  *
- * Design contract: see `docs/tx-tracker-spec.md` in the
- * `valve-tech/evm-toolkit` repo, which defines the `TxTracker`,
- * `TxEvent`, `TxTrackerStore`, and bulk-subscription surfaces this
- * package will export.
+ * Three consumption shapes (callback, async iterator, snapshot)
+ * over one push-based core. Per-method capability detection keeps
+ * the "no silent downgrade" invariant — every emitted event carries
+ * a `source` discriminator (`'subscription' | 'block-poll' |
+ * 'mempool-snapshot' | 'receipt-poll'`).
  *
- * Until v0.1.0 is published, no symbols are exported.
+ * Consumes `@valve-tech/chain-source` for upstream signals; sibling
+ * to `@valve-tech/gas-oracle` (both consume the same source, neither
+ * depends on the other).
+ *
+ * @example
+ *   import { createPublicClient, http } from 'viem'
+ *   import { mainnet } from 'viem/chains'
+ *   import { createChainSource } from '@valve-tech/chain-source'
+ *   import { createTxTracker } from '@valve-tech/tx-tracker'
+ *
+ *   const client  = createPublicClient({ chain: mainnet, transport: http() })
+ *   const source  = createChainSource({ client })
+ *   const tracker = createTxTracker({ source, chainId: 1 })
+ *
+ *   source.start()
+ *   tracker.start()
+ *
+ *   for await (const event of tracker.track('0xabc...')) {
+ *     console.log(event.kind, event.source, event.at.blockNumber)
+ *     if (event.kind === 'seen-in-block' && event.confirmations >= 6) break
+ *   }
+ *
+ *   tracker.stop()
+ *   source.stop()
  */
-export {}
+
+export { createTxTracker } from './tracker.js'
+export type {
+  CreateTxTrackerOptions,
+  TxTracker,
+  TrackOptions,
+  BulkTrackOptions,
+  TxMatchEvent,
+  TxSubscription,
+  LostSignalPolicy,
+} from './tracker.js'
+
+export {
+  buildStarted,
+  buildSeenInMempool,
+  buildLeftMempool,
+  buildSeenInBlock,
+  buildVanishedFromBlock,
+  buildReplacedBy,
+  buildUnseenForNBlocks,
+  buildSignalDegraded,
+  buildSignalRecovered,
+  buildStopped,
+  buildInitialStatus,
+} from './events.js'
+export type {
+  Address,
+  At,
+  Envelope,
+  Hash,
+  TxEvent,
+  TxEventStarted,
+  TxEventSeenInMempool,
+  TxEventLeftMempool,
+  TxEventSeenInBlock,
+  TxEventVanishedFromBlock,
+  TxEventReplacedBy,
+  TxEventUnseenForNBlocks,
+  TxEventSignalDegraded,
+  TxEventSignalRecovered,
+  TxEventStopped,
+  TxStatus,
+} from './events.js'
+
+export {
+  createInMemoryStore,
+  computeRetentionExpiry,
+  defaultRetentionBlocks,
+} from './store.js'
+export type {
+  BulkSelector,
+  HashSelector,
+  InMemoryStoreOptions,
+  PersistedSubscription,
+  TrackedTxRecord,
+  TxTrackerStore,
+} from './store.js'
+
+export {
+  appendBlock,
+  defaultReorgDepthBlocks,
+  detectDivergences,
+} from './reorg.js'
+export type { BlockDivergence, BlockSample } from './reorg.js'
+
+export {
+  compileSelector,
+  defaultMaxBulkSubscriptions,
+  matchAll,
+} from './selectors.js'
+export type { BulkMatchPayload, CompiledSelector } from './selectors.js'
