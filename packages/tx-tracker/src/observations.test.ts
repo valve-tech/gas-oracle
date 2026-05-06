@@ -15,7 +15,12 @@ import { test, expect } from 'vitest'
 
 import type { RawTx } from '@valve-tech/chain-source'
 
-import { buildInitialStatus, type Hash, type TxStatus } from './events.js'
+import {
+  buildInitialStatus,
+  buildVanishedFromBlock,
+  type Hash,
+  type TxStatus,
+} from './events.js'
 import {
   cacheIdentity,
   decideBlockObservation,
@@ -68,6 +73,7 @@ const blockInput = (overrides: {
   blockNumber?: bigint
   previousTipNumber?: bigint | null
   record?: ReadonlyTrackedRecord
+  prefetchedReceipts?: ReadonlyMap<Hash, import('@valve-tech/chain-source').TransactionReceipt>
 } = {}) => {
   const txs = overrides.txs ?? [txInBlock()]
   const blockHash = overrides.blockHash ?? '0xb1'
@@ -82,6 +88,7 @@ const blockInput = (overrides: {
     eventSource: 'block-poll' as const,
     envelope: ENVELOPE,
     previousTipNumber: overrides.previousTipNumber ?? null,
+    prefetchedReceipts: overrides.prefetchedReceipts,
   }
 }
 
@@ -562,4 +569,93 @@ test('cacheIdentity: returns the new identity when cache empty + tx complete', (
     from: '0xs',
     nonce: '0x5',
   })
+})
+
+// ---------- prefetchedReceipts (F2 §18.2) ----------
+
+test('decideBlockObservation: attaches prefetched receipt to seen-in-block on fresh inclusion', () => {
+  const receipt = {
+    transactionHash: '0xtracked',
+    blockHash: '0xb1',
+    blockNumber: '0x64',
+    status: '0x1',
+  }
+  const receipts = new Map([['0xtracked', receipt]])
+  const result = decideBlockObservation(
+    blockInput({ prefetchedReceipts: receipts }),
+  )
+  expect(result.events).toHaveLength(1)
+  const event = result.events[0]
+  expect(event.kind).toBe('seen-in-block')
+  if (event.kind === 'seen-in-block') {
+    expect(event.receipt).toEqual(receipt)
+  }
+})
+
+test('decideBlockObservation: no receipt attached when prefetchedReceipts omitted', () => {
+  const result = decideBlockObservation(blockInput())
+  expect(result.events).toHaveLength(1)
+  const event = result.events[0]
+  expect(event.kind).toBe('seen-in-block')
+  if (event.kind === 'seen-in-block') {
+    expect(event.receipt).toBeUndefined()
+  }
+})
+
+test('decideBlockObservation: no receipt attached when hash absent from prefetchedReceipts', () => {
+  // Map exists but does not contain the tracked hash.
+  const receipts = new Map([['0xother', { transactionHash: '0xother', blockHash: '0xb1', blockNumber: '0x1', status: '0x1' }]])
+  const result = decideBlockObservation(blockInput({ prefetchedReceipts: receipts }))
+  expect(result.events).toHaveLength(1)
+  const event = result.events[0]
+  expect(event.kind).toBe('seen-in-block')
+  if (event.kind === 'seen-in-block') {
+    expect(event.receipt).toBeUndefined()
+  }
+})
+
+test('decideBlockObservation: receipt NOT attached on same-block re-observation (isFreshInclusion false)', () => {
+  // Simulate already-recorded blockHash — same block re-emit should not produce a new event.
+  const receipt = {
+    transactionHash: '0xtracked',
+    blockHash: '0xb1',
+    blockNumber: '0x64',
+    status: '0x1',
+  }
+  const receipts = new Map([['0xtracked', receipt]])
+  const recordAlreadyInBlock = makeRecord()
+  const recordWithBlock = {
+    ...recordAlreadyInBlock,
+    status: {
+      ...recordAlreadyInBlock.status,
+      lastSeenInBlock: {
+        blockHash: '0xb1',
+        blockNumber: 100n,
+        transactionIndex: 0,
+        confirmations: 1,
+        source: 'subscription' as const,
+      },
+    },
+  }
+  const result = decideBlockObservation(
+    blockInput({ record: recordWithBlock, prefetchedReceipts: receipts }),
+  )
+  // Same-block re-observation — no event emitted.
+  expect(result.events).toHaveLength(0)
+})
+
+// ---------- buildVanishedFromBlock — spec §12.3 guard ----------
+
+test('buildVanishedFromBlock: throws when source is receipt-poll (spec §12.3)', () => {
+  expect(() =>
+    buildVanishedFromBlock({
+      hash: '0xtracked',
+      chainId: 1,
+      source: 'receipt-poll',
+      at: ENVELOPE,
+      previousBlockHash: '0xold',
+      canonicalBlockHash: '0xnew',
+      blockNumber: 100n,
+    }),
+  ).toThrow('receipt-poll cannot detect reorgs')
 })

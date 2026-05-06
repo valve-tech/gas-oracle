@@ -135,6 +135,16 @@ export interface TrackOptions {
    * `unseen-for-N-blocks` fires. Default 30 (spec §6.1).
    */
   unseenThresholdBlocks?: number
+
+  /**
+   * Eager receipt enrichment. When true, fetch the transaction
+   * receipt at seen-in-block time and attach it to the event via
+   * the `receipt` field. Adds one RPC per inclusion. Default false.
+   * Capability gate: requires source.capabilities().receiptByHash ===
+   * 'available'; when unavailable, events still flow but `receipt`
+   * is absent and a one-shot warning surfaces via onError.
+   */
+  withReceipts?: boolean
 }
 
 /** Bulk subscription options — extends per-hash `TrackOptions`. */
@@ -253,6 +263,13 @@ interface TrackedRecord {
   hasDurableSub: boolean
   /** Records of subscriptions for store persistence. */
   persisted: PersistedSubscription[]
+  /**
+   * True if any active subscription requested withReceipts. Set on
+   * subscribe; never auto-cleared (cheap to over-fetch — receipts
+   * are cached on the upstream and consumers expect once-set means
+   * future events get them).
+   */
+  withReceipts: boolean
 }
 
 interface BulkSub {
@@ -390,6 +407,11 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
   let blocksSinceLastReceiptPoll = new Map<Hash, number>()
   let receiptPollGateWarned = false
 
+  // withReceipts eager enrichment state (spec §18.2, F2). One-shot
+  // capability-gate warning, reset on stop() so a subsequent start()
+  // begins clean.
+  let withReceiptsGateWarned = false
+
   // -------------------------------------------------------------
   // Helpers
   // -------------------------------------------------------------
@@ -468,6 +490,7 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
       lostSignalPolicy: null,
       hasDurableSub: false,
       persisted: [],
+      withReceipts: false,
     }
     tracked.set(hash, record)
     return record
@@ -607,7 +630,7 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
   // Block path — runs on every source block emit
   // -------------------------------------------------------------
 
-  const onBlock = (block: BlockResult): void => {
+  const onBlock = async (block: BlockResult): Promise<void> => {
     let blockNumber: bigint
     try {
       blockNumber = BigInt(block.number)
@@ -668,6 +691,51 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     // per-hash subscriptions."
     runBulkOnBlock(txs, eventSource)
 
+    // withReceipts F2 — pre-fetch receipts for hashes that (a) request
+    // receipt enrichment and (b) are about to be included in this block.
+    // Fetched in parallel before the per-record loop so the first emitted
+    // seen-in-block event already carries the receipt (spec §18.2).
+    const prefetchedReceipts = new Map<Hash, TransactionReceipt>()
+    if (source.capabilities().receiptByHash === 'available') {
+      const targets: Hash[] = []
+      for (const record of tracked.values()) {
+        if (record.withReceipts && txHashSet.has(record.hash)) {
+          targets.push(record.hash)
+        }
+      }
+      if (targets.length > 0) {
+        const results = await Promise.all(
+          targets.map(async (hash) => {
+            try {
+              return [hash, await source.getReceipt(hash)] as const
+            } catch (err) {
+              onError?.('tx-tracker.getReceipt', err)
+              return [hash, null] as const
+            }
+          }),
+        )
+        for (const [hash, receipt] of results) {
+          if (receipt) prefetchedReceipts.set(hash, receipt)
+        }
+      }
+    } else {
+      // Capability gate: warn once if any tracked hash wants withReceipts.
+      for (const record of tracked.values()) {
+        if (record.withReceipts) {
+          if (!withReceiptsGateWarned) {
+            withReceiptsGateWarned = true
+            onError?.(
+              'tx-tracker.withReceipts',
+              new Error(
+                'withReceipts: true requested but capability receiptByHash unavailable; events flow without receipt field',
+              ),
+            )
+          }
+          break
+        }
+      }
+    }
+
     // Per-hash inclusion check + confirmations + unseen-streak
     // accounting. Delegated to `decideBlockObservation` (pure) — the
     // orchestrator below merges the returned patches into the
@@ -684,6 +752,7 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
         eventSource,
         envelope,
         previousTipNumber,
+        prefetchedReceipts,
       })
       applyObservationResult(record, result)
       for (const event of result.events) emit(record, event)
@@ -1018,6 +1087,9 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     if (opts.lostSignalPolicy && record.lostSignalPolicy === null) {
       record.lostSignalPolicy = opts.lostSignalPolicy
     }
+    if (opts.withReceipts === true) {
+      record.withReceipts = true
+    }
     if (opts.durable) {
       record.hasDurableSub = true
       const subId = `sub-${nextSubId++}`
@@ -1281,6 +1353,8 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     // Reset receipt-poll-fallback state so a subsequent start() begins clean.
     blocksSinceLastReceiptPoll = new Map()
     receiptPollGateWarned = false
+    // Reset withReceipts gate so a subsequent start() begins clean.
+    withReceiptsGateWarned = false
   }
 
   // Eager lifecycle: subscribe immediately on construction. Lazy

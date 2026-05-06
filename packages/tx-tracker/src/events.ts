@@ -20,7 +20,7 @@
  * builders. Browser/mobile safe (§2.4).
  */
 
-import type { Capabilities, EventSource, RawTx } from '@valve-tech/chain-source'
+import type { Capabilities, EventSource, RawTx, TransactionReceipt } from '@valve-tech/chain-source'
 
 /**
  * Hash type carried on every event. The chain-source layer keeps
@@ -106,6 +106,9 @@ export interface TxEventLeftMempool extends Envelope {
  * `confirmations` counts blocks observed since this inclusion
  * inclusive of the inclusion block itself (so the first
  * inclusion event has `confirmations: 1`).
+ *
+ * `receipt` is present iff the subscription set `withReceipts: true`.
+ * Adds one RPC per inclusion (spec §18.2, v0.8.0 design F2).
  */
 export interface TxEventSeenInBlock extends Envelope {
   kind: 'seen-in-block'
@@ -113,6 +116,12 @@ export interface TxEventSeenInBlock extends Envelope {
   blockNumber: bigint
   transactionIndex: number
   confirmations: number
+  /**
+   * Transaction receipt — present iff the subscription set
+   * `withReceipts: true`. Adds one RPC per inclusion (spec §18.2,
+   * v0.8.0 design F2).
+   */
+  receipt?: TransactionReceipt
 }
 
 /**
@@ -305,6 +314,7 @@ export const buildSeenInBlock = (
     blockNumber: bigint
     transactionIndex: number
     confirmations: number
+    receipt?: TransactionReceipt
   },
 ): TxEventSeenInBlock => ({
   ...makeEnvelope(input),
@@ -313,6 +323,7 @@ export const buildSeenInBlock = (
   blockNumber: input.blockNumber,
   transactionIndex: input.transactionIndex,
   confirmations: input.confirmations,
+  ...(input.receipt !== undefined ? { receipt: input.receipt } : {}),
 })
 
 /**

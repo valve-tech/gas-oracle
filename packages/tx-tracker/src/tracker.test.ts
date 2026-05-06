@@ -1928,3 +1928,398 @@ test('receipt-poll-fallback — does not emit globally when subscription is torn
 
   tracker.stop()
 })
+
+// ---------- withReceipts: true eager enrichment tests (spec §18.2, F2) ----------
+
+test('withReceipts: true — attaches receipt to seen-in-block on first emit', async () => {
+  const source = makeSource({
+    initialCaps: {
+      newHeads: 'subscription',
+      newPendingTransactions: 'subscription',
+      txpoolContent: 'available',
+      receiptByHash: 'available',
+      reprobeOnReconnect: true,
+    },
+    receiptMap: {
+      '0xt': {
+        transactionHash: '0xt',
+        blockHash: '0xb1',
+        blockNumber: '0x10',
+        status: '0x1',
+      },
+    },
+  })
+
+  const tracker = createTxTracker({ source, chainId: 1 })
+  tracker.start()
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), {
+    withReceipts: true,
+    emitInitial: false,
+  })
+
+  source.emitBlock({
+    number: '0x10',
+    hash: '0xb1',
+    parentHash: '0x0',
+    timestamp: '0x0',
+    baseFeePerGas: '0x0',
+    gasLimit: '0x0',
+    gasUsed: '0x0',
+    transactions: [{ hash: '0xt', from: '0xs', nonce: '0x0' }],
+  })
+  await flush()
+
+  const seenInBlocks = events.filter(
+    (e): e is import('./events.js').TxEventSeenInBlock => e.kind === 'seen-in-block',
+  )
+  // Exactly one emission — receipt is on the first event, not a follow-up.
+  expect(seenInBlocks).toHaveLength(1)
+  expect(seenInBlocks[0].receipt).toBeDefined()
+  expect(seenInBlocks[0].receipt!.status).toBe('0x1')
+  tracker.stop()
+})
+
+test('withReceipts: true + receiptByHash unavailable — flows without receipt + warns once', async () => {
+  const onError = vi.fn()
+  const source = makeSource({
+    initialCaps: {
+      newHeads: 'subscription',
+      newPendingTransactions: 'subscription',
+      txpoolContent: 'available',
+      receiptByHash: 'unavailable',
+      reprobeOnReconnect: true,
+    },
+  })
+  const tracker = createTxTracker({ source, chainId: 1, onError })
+  tracker.start()
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), {
+    withReceipts: true,
+    emitInitial: false,
+  })
+
+  // Push two block ticks to verify warn-once.
+  source.emitBlock({
+    number: '0x10',
+    hash: '0xb1',
+    parentHash: '0x0',
+    timestamp: '0x0',
+    baseFeePerGas: '0x0',
+    gasLimit: '0x0',
+    gasUsed: '0x0',
+    transactions: [{ hash: '0xt', from: '0xs', nonce: '0x0' }],
+  })
+  await flush()
+  source.emitBlock({
+    number: '0x11',
+    hash: '0xb2',
+    parentHash: '0xb1',
+    timestamp: '0x0',
+    baseFeePerGas: '0x0',
+    gasLimit: '0x0',
+    gasUsed: '0x0',
+    transactions: [],
+  })
+  await flush()
+
+  const seenInBlocks = events.filter(
+    (e): e is import('./events.js').TxEventSeenInBlock => e.kind === 'seen-in-block',
+  )
+  expect(seenInBlocks.length).toBeGreaterThan(0)
+  for (const e of seenInBlocks) expect(e.receipt).toBeUndefined()
+
+  // Warn-once: only one call with the withReceipts method tag.
+  const withReceiptsWarns = onError.mock.calls.filter(
+    ([method]) => method === 'tx-tracker.withReceipts',
+  )
+  expect(withReceiptsWarns).toHaveLength(1)
+  tracker.stop()
+})
+
+test('withReceipts: false (default) — no receipt field on seen-in-block event', async () => {
+  const source = makeSource({
+    receiptMap: {
+      '0xt': {
+        transactionHash: '0xt',
+        blockHash: '0xb1',
+        blockNumber: '0x10',
+        status: '0x1',
+      },
+    },
+  })
+  const tracker = createTxTracker({ source, chainId: 1 })
+  tracker.start()
+
+  const events: import('./events.js').TxEvent[] = []
+  // withReceipts not set — defaults to false
+  tracker.subscribe('0xt', (e) => events.push(e), { emitInitial: false })
+
+  source.emitBlock(makeBlock(16n, '0xb1', [{ hash: '0xt', from: '0xs', nonce: '0x0' }]))
+  await flush()
+
+  const seen = events.find(
+    (e): e is import('./events.js').TxEventSeenInBlock => e.kind === 'seen-in-block',
+  )
+  expect(seen).toBeDefined()
+  expect(seen!.receipt).toBeUndefined()
+  tracker.stop()
+})
+
+test('withReceipts: true + getReceipt throws — events flow without receipt + onError fires', async () => {
+  const onError = vi.fn()
+  const receiptError = new Error('rpc timeout')
+  const source = makeSource({
+    initialCaps: {
+      newHeads: 'subscription',
+      newPendingTransactions: 'subscription',
+      txpoolContent: 'available',
+      receiptByHash: 'available',
+      reprobeOnReconnect: true,
+    },
+    getReceiptImpl: () => Promise.reject(receiptError),
+  })
+  const tracker = createTxTracker({ source, chainId: 1, onError })
+  tracker.start()
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), {
+    withReceipts: true,
+    emitInitial: false,
+  })
+
+  source.emitBlock({
+    number: '0x10',
+    hash: '0xb1',
+    parentHash: '0x0',
+    timestamp: '0x0',
+    baseFeePerGas: '0x0',
+    gasLimit: '0x0',
+    gasUsed: '0x0',
+    transactions: [{ hash: '0xt', from: '0xs', nonce: '0x0' }],
+  })
+  await flush()
+
+  const seen = events.find(
+    (e): e is import('./events.js').TxEventSeenInBlock => e.kind === 'seen-in-block',
+  )
+  // Event still emitted even though getReceipt failed.
+  expect(seen).toBeDefined()
+  expect(seen!.receipt).toBeUndefined()
+  // onError should have been called with the RPC error.
+  expect(onError).toHaveBeenCalledWith('tx-tracker.getReceipt', receiptError)
+  tracker.stop()
+})
+
+test('withReceipts: true + multiple subscriptions same hash — only one receipt fetch per block tick', async () => {
+  let fetchCount = 0
+  const source = makeSource({
+    initialCaps: {
+      newHeads: 'subscription',
+      newPendingTransactions: 'subscription',
+      txpoolContent: 'available',
+      receiptByHash: 'available',
+      reprobeOnReconnect: true,
+    },
+    getReceiptImpl: async () => {
+      fetchCount++
+      return {
+        transactionHash: '0xt',
+        blockHash: '0xb1',
+        blockNumber: '0x10',
+        status: '0x1',
+      }
+    },
+  })
+  const tracker = createTxTracker({ source, chainId: 1 })
+  tracker.start()
+
+  // Two subscriptions on the same hash, both with withReceipts: true.
+  const eventsA: import('./events.js').TxEvent[] = []
+  const eventsB: import('./events.js').TxEvent[] = []
+  const unsubA = tracker.subscribe('0xt', (e) => eventsA.push(e), {
+    withReceipts: true,
+    emitInitial: false,
+  })
+  const unsubB = tracker.subscribe('0xt', (e) => eventsB.push(e), {
+    withReceipts: true,
+    emitInitial: false,
+  })
+
+  source.emitBlock({
+    number: '0x10',
+    hash: '0xb1',
+    parentHash: '0x0',
+    timestamp: '0x0',
+    baseFeePerGas: '0x0',
+    gasLimit: '0x0',
+    gasUsed: '0x0',
+    transactions: [{ hash: '0xt', from: '0xs', nonce: '0x0' }],
+  })
+  await flush()
+
+  // Receipt fetched exactly once despite two subscriptions.
+  expect(fetchCount).toBe(1)
+  // Both subscribers receive the seen-in-block with receipt.
+  const seenA = eventsA.find(
+    (e): e is import('./events.js').TxEventSeenInBlock => e.kind === 'seen-in-block',
+  )
+  const seenB = eventsB.find(
+    (e): e is import('./events.js').TxEventSeenInBlock => e.kind === 'seen-in-block',
+  )
+  expect(seenA?.receipt).toBeDefined()
+  expect(seenB?.receipt).toBeDefined()
+  unsubA()
+  unsubB()
+  tracker.stop()
+})
+
+test('withReceipts: true + reorg — vanished then re-included fetches fresh receipt', async () => {
+  let fetchCount = 0
+  const source = makeSource({
+    initialCaps: {
+      newHeads: 'subscription',
+      newPendingTransactions: 'subscription',
+      txpoolContent: 'available',
+      receiptByHash: 'available',
+      reprobeOnReconnect: true,
+    },
+    getReceiptImpl: async () => {
+      fetchCount++
+      return {
+        transactionHash: '0xt',
+        blockHash: '0xb2new',
+        blockNumber: '0x11',
+        status: '0x1',
+      }
+    },
+  })
+  const tracker = createTxTracker({ source, chainId: 1 })
+  tracker.start()
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), {
+    withReceipts: true,
+    emitInitial: false,
+  })
+
+  // First inclusion at block 16, hash 0xb1.
+  source.emitBlock({
+    number: '0x10',
+    hash: '0xb1',
+    parentHash: '0x0',
+    timestamp: '0x0',
+    baseFeePerGas: '0x0',
+    gasLimit: '0x0',
+    gasUsed: '0x0',
+    transactions: [{ hash: '0xt', from: '0xs', nonce: '0x0' }],
+  })
+  await flush()
+
+  const firstSeen = events.find(
+    (e): e is import('./events.js').TxEventSeenInBlock => e.kind === 'seen-in-block',
+  )
+  expect(firstSeen?.receipt).toBeDefined()
+  expect(fetchCount).toBe(1)
+
+  // Reorg: same height, different block hash — tx is vanished.
+  source.emitBlock({
+    number: '0x10',
+    hash: '0xb2new',
+    parentHash: '0x0',
+    timestamp: '0x0',
+    baseFeePerGas: '0x0',
+    gasLimit: '0x0',
+    gasUsed: '0x0',
+    transactions: [],
+  })
+  await flush()
+
+  const vanished = events.find((e) => e.kind === 'vanished-from-block')
+  expect(vanished).toBeDefined()
+
+  // Re-inclusion at a new block — fresh receipt fetch.
+  source.emitBlock({
+    number: '0x11',
+    hash: '0xb3',
+    parentHash: '0xb2new',
+    timestamp: '0x0',
+    baseFeePerGas: '0x0',
+    gasLimit: '0x0',
+    gasUsed: '0x0',
+    transactions: [{ hash: '0xt', from: '0xs', nonce: '0x0' }],
+  })
+  await flush()
+
+  const allSeen = events.filter(
+    (e): e is import('./events.js').TxEventSeenInBlock => e.kind === 'seen-in-block',
+  )
+  // Second inclusion carries a fresh receipt.
+  expect(allSeen.length).toBeGreaterThanOrEqual(2)
+  expect(allSeen[allSeen.length - 1].receipt).toBeDefined()
+  // Fetch count incremented for the re-inclusion.
+  expect(fetchCount).toBe(2)
+  tracker.stop()
+})
+
+test('withReceipts: true + stop() resets gate — second start() warns again on capability miss', async () => {
+  const onError = vi.fn()
+  const source = makeSource({
+    initialCaps: {
+      newHeads: 'subscription',
+      newPendingTransactions: 'subscription',
+      txpoolContent: 'available',
+      receiptByHash: 'unavailable',
+      reprobeOnReconnect: true,
+    },
+  })
+  const tracker = createTxTracker({ source, chainId: 1, onError })
+  tracker.start()
+
+  tracker.subscribe('0xt', () => {}, { withReceipts: true, emitInitial: false })
+
+  source.emitBlock({
+    number: '0x10',
+    hash: '0xb1',
+    parentHash: '0x0',
+    timestamp: '0x0',
+    baseFeePerGas: '0x0',
+    gasLimit: '0x0',
+    gasUsed: '0x0',
+    transactions: [{ hash: '0xt', from: '0xs', nonce: '0x0' }],
+  })
+  await flush()
+
+  const warnsAfterFirstStart = onError.mock.calls.filter(
+    ([m]) => m === 'tx-tracker.withReceipts',
+  )
+  expect(warnsAfterFirstStart).toHaveLength(1)
+
+  // Stop resets the gate.
+  tracker.stop()
+
+  // Re-start: subscribe again and emit a block.
+  tracker.start()
+  tracker.subscribe('0xt', () => {}, { withReceipts: true, emitInitial: false })
+
+  source.emitBlock({
+    number: '0x11',
+    hash: '0xb2',
+    parentHash: '0xb1',
+    timestamp: '0x0',
+    baseFeePerGas: '0x0',
+    gasLimit: '0x0',
+    gasUsed: '0x0',
+    transactions: [{ hash: '0xt', from: '0xs', nonce: '0x0' }],
+  })
+  await flush()
+
+  const warnsAfterSecondStart = onError.mock.calls.filter(
+    ([m]) => m === 'tx-tracker.withReceipts',
+  )
+  // Gate fired again after stop()/start() cycle.
+  expect(warnsAfterSecondStart).toHaveLength(2)
+  tracker.stop()
+})

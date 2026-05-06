@@ -18,7 +18,7 @@
  * via its event-bus + store-audit-log machinery.
  */
 
-import type { EventSource, RawTx } from '@valve-tech/chain-source'
+import type { EventSource, RawTx, TransactionReceipt } from '@valve-tech/chain-source'
 
 import {
   buildLeftMempool,
@@ -100,6 +100,16 @@ export interface BlockObservationInput {
    * very first block we observe.
    */
   previousTipNumber: bigint | null
+  /**
+   * Pre-fetched receipts for hashes whose `withReceipts` flag is set.
+   * When a hash appears in this map, the receipt is attached to the
+   * `seen-in-block` event. Omitted or empty means no enrichment. This
+   * is the sole path for F2 eager receipt attachment (spec §18.2) —
+   * the orchestrator fetches and populates this map before calling
+   * `decideBlockObservation`, so the first emitted event carries the
+   * receipt without a follow-up re-emit.
+   */
+  prefetchedReceipts?: ReadonlyMap<Hash, TransactionReceipt>
 }
 
 /**
@@ -135,6 +145,7 @@ export const decideBlockObservation = (
     eventSource,
     envelope,
     previousTipNumber,
+    prefetchedReceipts,
   } = input
 
   const wasSeenInThisBlock = txHashSet.has(record.hash)
@@ -159,6 +170,9 @@ export const decideBlockObservation = (
       confirmations,
       source: eventSource,
     }
+    const receipt = isFreshInclusion
+      ? prefetchedReceipts?.get(record.hash)
+      : undefined
     const events: TxEvent[] = isFreshInclusion
       ? [
           buildSeenInBlock({
@@ -170,6 +184,7 @@ export const decideBlockObservation = (
             blockNumber,
             transactionIndex,
             confirmations,
+            ...(receipt !== undefined ? { receipt } : {}),
           }),
         ]
       : []
