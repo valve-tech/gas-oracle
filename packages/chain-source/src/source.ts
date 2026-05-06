@@ -27,12 +27,17 @@
  *     Callers that need a guaranteed-fresh result can `await
  *     source.ready()` before reading `capabilities()`.
  *
- * Push subscriptions (eth_subscribe) are not yet wired in v0.3.x —
- * the `Capabilities.newHeads` / `newPendingTransactions` fields
- * disclose what *would* be available structurally, but the source
- * always falls back to its interval poll cycle in this revision.
- * Future revisions add WS push without changing the consumer-facing
- * `subscribeBlocks` / `subscribeMempool` shape.
+ * Push subscriptions (eth_subscribe):
+ *
+ *   - As of v0.8.0, when capabilities.newHeads === 'subscription' (probed at
+ *     construction via probeCapabilities), the source opens a live
+ *     eth_subscribe('newHeads') lazily on the first start(). Head events
+ *     are piped through the existing fetchBlock + dedup-by-hash machinery
+ *     so push and poll coexist safely. On subscribe failure, the cached
+ *     capability downgrades to 'poll-only', surfaces via onError, and the
+ *     poll cycle continues unchanged.
+ *   - subscribeMempool will gain the equivalent newPendingTransactions
+ *     path in a follow-up commit (Task 3 of the v0.8.0 release).
  */
 
 import type { PublicClient } from 'viem'
@@ -232,6 +237,12 @@ export const createChainSource = (
    * existing dedup machinery so push and poll coexist safely. Failure
    * downgrades the cached capability to `'poll-only'` and surfaces via
    * `onError`; the existing poll cycle continues unchanged.
+   *
+   * No idempotency flag is needed here: start() is already gated by the
+   * outer `started` flag (preventing double-subscription within one start
+   * cycle), and stop()/start() resume legitimately requires this function
+   * to run again — stop() sets blockSubscriptionHandle = null so the next
+   * call opens a fresh subscription cleanly.
    */
   const tryOpenBlockSubscription = async (): Promise<void> => {
     if (cachedCapabilities.newHeads !== 'subscription') return
