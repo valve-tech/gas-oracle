@@ -47,15 +47,10 @@ import type {
 import { Subscriptions } from '@valve-tech/chain-source'
 
 import {
-  buildLeftMempool,
-  buildReplacedBy,
-  buildSeenInBlock,
-  buildSeenInMempool,
   buildSignalDegraded,
   buildSignalRecovered,
   buildStarted,
   buildStopped,
-  buildUnseenForNBlocks,
   buildVanishedFromBlock,
   buildInitialStatus,
   type Address,
@@ -64,6 +59,11 @@ import {
   type TxEvent,
   type TxStatus,
 } from './events.js'
+import {
+  decideBlockObservation,
+  decideMempoolObservation,
+  type ObservationResult,
+} from './observations.js'
 import {
   appendBlock,
   defaultReorgDepthBlocks,
@@ -542,122 +542,25 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     runBulkOnBlock(txs, eventSource)
 
     // Per-hash inclusion check + confirmations + unseen-streak
-    // accounting.
+    // accounting. Delegated to `decideBlockObservation` (pure) — the
+    // orchestrator below merges the returned patches into the
+    // mutable record and emits the returned events.
+    const envelope = buildAt()
     for (const record of tracked.values()) {
-      const wasSeenInThisBlock = record.hash ? txHashSet.has(record.hash) : false
-      if (wasSeenInThisBlock) {
-        const tx = txs.find((t) => t.hash === record.hash)!
-        cacheIdentityFromTx(record, tx)
-        const transactionIndex = txs.indexOf(tx)
-        const isFreshInclusion =
-          record.status.lastSeenInBlock?.blockHash !== blockHash
-        const confirmations = isFreshInclusion
-          ? 1
-          : record.status.lastSeenInBlock!.confirmations
-        record.status.lastSeenInBlock = {
-          blockHash,
-          blockNumber,
-          transactionIndex,
-          confirmations,
-          source: eventSource,
-        }
-        record.status.unseenStreak = 0
-        record.status.firstObservedAtBlock ??= blockNumber
-        record.status.lastObservedAtBlock = blockNumber
-        if (isFreshInclusion) {
-          emit(
-            record,
-            buildSeenInBlock({
-              hash: record.hash,
-              chainId,
-              source: eventSource,
-              at: buildAt(),
-              blockHash,
-              blockNumber,
-              transactionIndex,
-              confirmations,
-            }),
-          )
-        }
-        continue
-      }
-
-      // Not in this block. If we'd previously seen it in a block,
-      // bump confirmations on the cached lastSeenInBlock.
-      if (record.status.lastSeenInBlock && previousTipNumber !== null) {
-        record.status.lastSeenInBlock = {
-          ...record.status.lastSeenInBlock,
-          confirmations: record.status.lastSeenInBlock.confirmations + 1,
-        }
-        record.status.lastObservedAtBlock = blockNumber
-        emit(
-          record,
-          buildSeenInBlock({
-            hash: record.hash,
-            chainId,
-            source: eventSource,
-            at: buildAt(),
-            blockHash: record.status.lastSeenInBlock.blockHash,
-            blockNumber: record.status.lastSeenInBlock.blockNumber,
-            transactionIndex: record.status.lastSeenInBlock.transactionIndex,
-            confirmations: record.status.lastSeenInBlock.confirmations,
-          }),
-        )
-        continue
-      }
-
-      // Replacement detection: if a different tx with the same
-      // (from, nonce) appears in this block, emit replaced-by.
-      if (record.identity) {
-        const replacement = txs.find(
-          (t) =>
-            t.from?.toLowerCase() === record.identity!.from.toLowerCase() &&
-            t.nonce === record.identity!.nonce &&
-            t.hash &&
-            t.hash !== record.hash,
-        )
-        if (replacement && replacement.hash) {
-          record.status.replacedBy = {
-            hash: replacement.hash,
-            blockNumber,
-          }
-          record.status.lastObservedAtBlock = blockNumber
-          emit(
-            record,
-            buildReplacedBy({
-              hash: record.hash,
-              chainId,
-              source: eventSource,
-              at: buildAt(),
-              replacementHash: replacement.hash,
-              replacementBlockNumber: blockNumber,
-            }),
-          )
-          continue
-        }
-      }
-
-      // Truly unseen — bump streak and maybe emit unseen-for-N.
-      // Skipping streak bumps when we've never observed the hash at
-      // all is intentional: a brand-new subscription should not fire
-      // unseen-for-N on the very first block it watches.
-      if (record.status.firstObservedAtBlock !== null) {
-        record.status.unseenStreak += 1
-        if (record.status.unseenStreak === record.unseenThresholdBlocks) {
-          emit(
-            record,
-            buildUnseenForNBlocks({
-              hash: record.hash,
-              chainId,
-              source: eventSource,
-              at: buildAt(),
-              blocks: record.status.unseenStreak,
-            }),
-          )
-        }
-      }
+      const result = decideBlockObservation({
+        record,
+        blockHash,
+        blockNumber,
+        txHashSet,
+        txs,
+        chainId,
+        eventSource,
+        envelope,
+        previousTipNumber,
+      })
+      applyObservationResult(record, result)
+      for (const event of result.events) emit(record, event)
     }
-
   }
 
   /**
@@ -767,10 +670,24 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     lastCaps = next
   }
 
-  const cacheIdentityFromTx = (record: TrackedRecord, tx: RawTx): void => {
-    if (record.identity) return
-    if (tx.from && tx.nonce) {
-      record.identity = { from: tx.from, nonce: tx.nonce }
+  /**
+   * Apply a pure-decision result to a mutable internal record. The
+   * decision functions return narrow patches (only the fields they
+   * decided to change); this orchestrator merges them into the
+   * record in one place so mutation is bounded and auditable.
+   */
+  const applyObservationResult = (
+    record: TrackedRecord,
+    result: ObservationResult,
+  ): void => {
+    if (Object.keys(result.statusPatch).length > 0) {
+      record.status = { ...record.status, ...result.statusPatch }
+    }
+    if (result.identityPatch) {
+      record.identity = result.identityPatch
+    }
+    if (result.inMempoolPatch !== null) {
+      record.inLastMempoolSnapshot = result.inMempoolPatch
     }
   }
 
@@ -798,106 +715,65 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     }
 
     const eventSource = mempoolEventSource(source.capabilities())
+    const envelope = buildAt()
+    const tipBlockNumber = latestTip?.number ?? 0n
 
+    // Per-hash presence + replacement detection. Both delegated to
+    // `decideMempoolObservation` (pure). The orchestrator pre-
+    // computes the per-record replacement candidate from the
+    // snapshot so the decision function stays closure-free.
     for (const record of tracked.values()) {
       const presence = byHash.get(record.hash) ?? null
-      if (presence) {
-        cacheIdentityFromTx(record, presence.tx)
-        const isFreshOrBucketChange =
-          !record.inLastMempoolSnapshot ||
-          record.status.lastSeenInMempool?.bucket !== presence.bucket
-        record.status.lastSeenInMempool = {
-          bucket: presence.bucket,
-          tx: presence.tx,
-          at: buildAt(),
-          source: eventSource,
-        }
-        record.status.unseenStreak = 0
-        record.inLastMempoolSnapshot = true
-        record.status.firstObservedAtBlock ??= latestTip?.number ?? 0n
-        record.status.lastObservedAtBlock = latestTip?.number ?? 0n
-        if (isFreshOrBucketChange) {
-          emit(
-            record,
-            buildSeenInMempool({
-              hash: record.hash,
-              chainId,
-              source: eventSource,
-              at: buildAt(),
-              bucket: presence.bucket,
-              tx: presence.tx,
-            }),
-          )
-        }
-        continue
-      }
-      // Not in this snapshot — if it was in the previous one, emit
-      // left-mempool. We do NOT count this as an "unseen" tick on
-      // its own; the block path handles the streak counter.
-      if (record.inLastMempoolSnapshot) {
-        record.inLastMempoolSnapshot = false
-        emit(
-          record,
-          buildLeftMempool({
-            hash: record.hash,
-            chainId,
-            source: eventSource,
-            at: buildAt(),
-          }),
-        )
-      }
-    }
-
-    // Replacement detection on the mempool path — a different hash
-    // with the same (from, nonce) appearing while the tracked tx
-    // is still pending means a bumped/cancel replacement.
-    for (const record of tracked.values()) {
-      if (!record.identity) continue
-      if (record.status.replacedBy) continue
-      // Walk both buckets looking for a colliding (from, nonce).
-      const replacement = findReplacement(snapshot, record)
-      if (replacement && replacement.hash && replacement.hash !== record.hash) {
-        record.status.replacedBy = {
-          hash: replacement.hash,
-          blockNumber: null,
-        }
-        emit(
-          record,
-          buildReplacedBy({
-            hash: record.hash,
-            chainId,
-            source: eventSource,
-            at: buildAt(),
-            replacementHash: replacement.hash,
-            replacementBlockNumber: null,
-          }),
-        )
-      }
+      const replacementInMempool = record.identity
+        ? findReplacementInMempool(snapshot, record.identity, record.hash)
+        : null
+      const result = decideMempoolObservation({
+        record,
+        presence,
+        replacementInMempool,
+        chainId,
+        eventSource,
+        envelope,
+        tipBlockNumber,
+      })
+      applyObservationResult(record, result)
+      for (const event of result.events) emit(record, event)
     }
 
     // Bulk subscriptions on the mempool path.
     runBulkOnMempool(byHash, eventSource)
   }
 
-  const findReplacement = (
+  /**
+   * Pure mempool-snapshot lookup for a colliding `(from, nonce)`.
+   * Replaces the closure-based legacy helper — extracted for direct
+   * testability and to keep `decideMempoolObservation` pure.
+   *
+   * Normalizes the cached identity's nonce to decimal before keying
+   * into the snapshot's nonce-keyed sub-map (chain-source's
+   * `normalizeMempool` lowercases addresses + decimalizes nonces).
+   * If the cached nonce isn't valid hex (test fixtures or off-spec
+   * RPCs), the BigInt() throws — fallback uses the raw string as
+   * the key.
+   */
+  const findReplacementInMempool = (
     snapshot: NormalizedMempool,
-    record: TrackedRecord,
+    identity: { from: string; nonce: string },
+    originalHash: Hash,
   ): RawTx | null => {
-    const target = record.identity!
-    const senderKey = target.from.toLowerCase()
-    const nonceKey = (() => {
-      try {
-        return BigInt(target.nonce).toString(10)
-      } catch {
-        return target.nonce
-      }
-    })()
+    const senderKey = identity.from.toLowerCase()
+    let nonceKey: string
+    try {
+      nonceKey = BigInt(identity.nonce).toString(10)
+    } catch {
+      nonceKey = identity.nonce
+    }
     const buckets: ('pending' | 'queued')[] = ['pending', 'queued']
     for (const bucket of buckets) {
       const senderTxs = snapshot[bucket][senderKey]
       if (!senderTxs) continue
       const tx = senderTxs[nonceKey]
-      if (tx?.hash && tx.hash !== record.hash) return tx
+      if (tx?.hash && tx.hash !== originalHash) return tx
     }
     return null
   }

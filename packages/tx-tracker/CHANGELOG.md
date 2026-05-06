@@ -74,7 +74,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `findReplacement` raw-nonce fallback when `BigInt()` throws,
   `lifecycle: 'lazy'` accepts-the-option contract.
 - Coverage went **89.23% / 78.59% / 92.13% / 91.84%** stmts / branches
-  / funcs / lines → **96.13% / 88.93% / 98.87% / 97.61%**.
+  / funcs / lines → **96.13% / 88.93% / 98.87% / 97.61%**, then to
+  **97.22% / 92.7% / 98.9% / 98.12%** after the per-record decision
+  logic was extracted into pure functions (see "Refactor" below).
+
+### Refactor
+
+- **Per-record decision logic extracted from `tracker.ts` into a new
+  pure module `observations.ts`.** The previous shape — two giant
+  closures inside `onBlock` / `onMempool` mutating shared state and
+  emitting events as a side effect — was a pile of conditionals that
+  could only be tested by spinning up the full state machine through
+  a stub source. Now `decideBlockObservation` and
+  `decideMempoolObservation` are pure functions: literal inputs in,
+  `{ events, statusPatch, identityPatch, inMempoolPatch }` out. The
+  orchestrator in `tracker.ts` shrank to "compute envelope, loop
+  records, call decision fn, merge patch, emit events." Same shape
+  as the rest of the toolkit (`reducePollInputs` pure / poll loop
+  stateful in gas-oracle; math pure / source stateful in chain-source).
+  - **`observations.ts` lands at 100% statements / 100% branches**
+    (67/67 stmts, 55/55 branches) covered by 33 fixture-driven unit
+    tests in `observations.test.ts`. Each per-record decision arm
+    has a dedicated test with literal inputs — no async, no stubs,
+    no shared state.
+  - `tracker.ts` shrank from 374 statements → 344 (the extracted
+    code is gone) and is now mostly orchestration; its branch
+    coverage rose from 86.69% → 88.75%.
+  - `findReplacement` (closure-based) replaced with pure
+    `findReplacementInMempool(snapshot, identity, originalHash)`.
+    `cacheIdentityFromTx` (mutation-based) replaced with pure
+    `cacheIdentity(current, tx)` returning a patch.
+  - **No behavior change.** All 95 pre-refactor integration tests
+    continue to pass unchanged; the refactor is internal-only and
+    the public API surface is identical.
+  - Tracker test suite: 95 → 133 (+38: 33 from `observations.test.ts`
+    plus 5 new tracker integration tests covering reorg height-mismatch
+    skip and async-iterator multi-waiter drain paths).
 
 ### Notes
 

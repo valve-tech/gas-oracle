@@ -817,6 +817,122 @@ test('lifecycle: lazy is accepted (no behavioral difference in v0.6.x)', () => {
   tracker.stop()
 })
 
+test('reorg handler skips records whose lastSeenInBlock is at a different height', () => {
+  // Multi-hash setup: 0xtxA included at block 100, 0xtxB included
+  // at block 99. Reorg only on block 100. The handler must scope
+  // vanished-from-block to records matching the divergent height —
+  // 0xtxA fires; 0xtxB's record (height 99) is skipped at the
+  // `seen.blockNumber !== div.blockNumber` check.
+  const source = makeSource()
+  const tracker = startTracker(source)
+  const eventsA: import('./events.js').TxEvent[] = []
+  const eventsB: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xtxA', (e) => eventsA.push(e), { emitInitial: false })
+  tracker.subscribe('0xtxB', (e) => eventsB.push(e), { emitInitial: false })
+  // Block 99 includes 0xtxB
+  source.emitBlock(
+    makeBlock(99n, '0xb99', [
+      { hash: '0xtxB', from: '0xs', nonce: '0x1' },
+    ]),
+  )
+  // Block 100 includes 0xtxA — original hash 0xb100-orig
+  source.emitBlock(
+    makeBlock(100n, '0xb100-orig', [
+      { hash: '0xtxA', from: '0xs', nonce: '0x2' },
+    ], '0xb99'),
+  )
+  // Same-height reorg on block 100 only
+  source.emitBlock(makeBlock(100n, '0xb100-new', [], '0xb99'))
+  expect(eventsA.some((e) => e.kind === 'vanished-from-block')).toBe(true)
+  expect(eventsB.some((e) => e.kind === 'vanished-from-block')).toBe(false)
+  tracker.stop()
+})
+
+test('async iterator drains multiple pending waiters with done:true on tracker.stop', async () => {
+  // Two concurrent `next()` calls before any event arrives → both
+  // are pushed onto the waiters queue. tracker.stop() fires the
+  // `stopped` event, which resolves the first waiter with that
+  // event AND triggers the drain loop for the remaining waiter
+  // (resolved with done:true). Covers the explicit drain branches.
+  const source = makeSource()
+  const tracker = startTracker(source)
+  const iter = tracker
+    .track('0xz', { emitInitial: false })
+    [Symbol.asyncIterator]()
+  // Two pending next() calls — neither awaited yet.
+  const next1 = iter.next()
+  const next2 = iter.next()
+  tracker.stop()
+  const r1 = await next1
+  const r2 = await next2
+  // First gets the stopped event; second gets done.
+  expect(r1.done).toBe(false)
+  expect(r1.value.kind).toBe('stopped')
+  expect(r2.done).toBe(true)
+})
+
+test('async iterator return() resolves a pending waiter with the synthetic stopped event', async () => {
+  // Caller calls iter.return() (e.g. via a try/finally cleanup)
+  // while a next() promise is pending. The unsubscribe path emits
+  // a synthetic stopped event to the iterator's subscribe callback,
+  // which resolves the first pending waiter with that event. Any
+  // ADDITIONAL waiters then drain with done:true — see the
+  // separate "drains multiple pending waiters" test.
+  const source = makeSource()
+  const tracker = startTracker(source)
+  const iter = tracker
+    .track('0xz', { emitInitial: false })
+    [Symbol.asyncIterator]()
+  const pending = iter.next()
+  await iter.return!()
+  const result = await pending
+  expect(result.done).toBe(false)
+  expect(result.value.kind).toBe('stopped')
+  // A subsequent next() resolves done:true since the iterator is
+  // closed.
+  const after = await iter.next()
+  expect(after.done).toBe(true)
+  tracker.stop()
+})
+
+test('async iterator return() drains additional pending waiters with done:true', async () => {
+  // Two concurrent next() calls before return(). The first gets
+  // the synthetic stopped event; the second drains with done:true
+  // via the explicit waiter-drain loop in return().
+  const source = makeSource()
+  const tracker = startTracker(source)
+  const iter = tracker
+    .track('0xz', { emitInitial: false })
+    [Symbol.asyncIterator]()
+  const next1 = iter.next()
+  const next2 = iter.next()
+  await iter.return!()
+  const r1 = await next1
+  const r2 = await next2
+  expect(r1.done).toBe(false)
+  expect(r1.value.kind).toBe('stopped')
+  expect(r2.done).toBe(true)
+  tracker.stop()
+})
+
+test('bulk async iterator drains multiple pending waiters when sub.stop fires', async () => {
+  // Mirror of the per-hash drain test but for the bulk subscription
+  // iterator's separate state machine.
+  const source = makeSource()
+  const tracker = startTracker(source)
+  const sub = tracker.trackFromAddress('0xs')
+  const iter = sub.events()[Symbol.asyncIterator]()
+  const next1 = iter.next()
+  const next2 = iter.next()
+  await iter.return!()
+  const r1 = await next1
+  const r2 = await next2
+  expect(r1.done).toBe(true)
+  expect(r2.done).toBe(true)
+  sub.stop()
+  tracker.stop()
+})
+
 test('two subs on the same hash share one record; cleanup waits for both to unsubscribe', () => {
   const source = makeSource()
   const tracker = startTracker(source)
