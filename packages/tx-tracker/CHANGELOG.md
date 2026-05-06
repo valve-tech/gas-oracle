@@ -6,6 +6,63 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Per-tx state machine** (`createTxTracker`) consuming a
+  `ChainSource` for upstream block + mempool signals. Three
+  consumption shapes over one push-based core: `getTxStatus(hash)`
+  for the cached snapshot, `subscribe(hash, cb)` for callback-style,
+  and `track(hash)` for the async-iterator shape — all three back
+  onto the same internal stream so they see consistent state.
+- **`TxEvent` discriminated union** (spec §6) with neutral
+  observation kinds: `started`, `seen-in-mempool`, `left-mempool`,
+  `seen-in-block`, `vanished-from-block`, `replaced-by`,
+  `unseen-for-N-blocks`, `signal-degraded`, `signal-recovered`,
+  `stopped`. Every event carries an envelope (`hash`, `chainId`,
+  `source`, `at: { blockNumber, timestamp }`) so consumers can
+  apply policy (`'confirmed'`, `'stuck'`, etc.) in their own UX
+  voice without the tracker prejudging.
+- **`TxTrackerStore` interface + `createInMemoryStore` default**
+  (spec §9, §10). Block-unit retention (`retentionBlocks: 64` by
+  default — reorg safety is a depth invariant, not a wall-clock
+  invariant), bounded per-hash audit log (`eventLogCapacity: 256`
+  by default) for catch-up replay.
+- **Reorg detector** (`detectDivergences`, spec §12) — pure function
+  over `BlockSample[]` that flags same-height different-hash
+  divergences within `reorgDepthBlocks` (default 12). Ring is
+  conservative about heights with no canonical entry — a partial
+  canonical sequence does not nuke unrelated ring entries.
+- **Bulk subscriptions** (spec §11): `trackFromAddress`,
+  `trackToAddress`, `trackPredicate`. Auto-tracks matched hashes
+  by default (`autoTrackMatched: true`) so the per-hash event
+  stream is available too. Capped at `maxBulkSubscriptions: 16`.
+- **Capability disclosure** — `tracker.capabilities()` forwards the
+  source's snapshot. `signal-degraded` / `signal-recovered` events
+  fire on every tracked hash when source-level capability
+  transitions cross authority boundaries.
+- **Replacement detection** — caches `(from, nonce)` on first
+  observation and emits `replaced-by` when a different hash with
+  the same identity appears (mempool: `replacementBlockNumber: null`;
+  block: filled-in block number).
+- **`subscribeAll(cb)`** — global stream of every event the tracker
+  emits, useful for indexers piping to a single sink.
+
+### Notes
+
+- Implements spec §5–§12 minus the `'receipt-poll-fallback'`
+  lostSignalPolicy strategy (the type is accepted; the runtime
+  falls back to `'emit-uncertain'` and a follow-up PR adds the
+  per-block receipt fetch path).
+- Predicate bulk selectors are silently non-durable per spec §13.2
+  (closures don't survive a process boundary). The tracker logs a
+  warning via `onError` when a `predicate` selector is registered
+  with `durable: true` and persists everything else about the
+  selector.
+- `gas-oracle` and `tx-tracker` remain siblings — neither imports
+  the other; both consume `@valve-tech/chain-source` directly.
+
 ## [0.6.0] — 2026-05-05
 
 ### Notes

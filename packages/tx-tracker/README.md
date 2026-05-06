@@ -1,10 +1,5 @@
 # @valve-tech/tx-tracker
 
-> **Status: stub (v0.0.1).** This package is a name reservation. The
-> implementation lands in v0.1.0. See
-> [`docs/tx-tracker-spec.md`](https://github.com/valve-tech/evm-toolkit/blob/main/docs/tx-tracker-spec.md)
-> for the full design contract.
-
 Per-tx state machine for EVM chains. Emits **neutral observations** —
 `seen-in-mempool`, `seen-in-block`, `replaced-by`, `vanished-from-block`,
 `unseen-for-N-blocks`, `signal-degraded`, `signal-recovered`, `stopped` —
@@ -12,8 +7,11 @@ so wallet UIs, indexers, and relays can write their own interpretations
 on top. The package itself never says "confirmed" or "stuck"; it gives
 you the data to decide.
 
+See
+[`docs/tx-tracker-spec.md`](https://github.com/valve-tech/evm-toolkit/blob/main/docs/tx-tracker-spec.md)
+for the full design contract.
+
 ```ts
-// v0.1.0+ shape (not yet implemented):
 import { createChainSource } from '@valve-tech/chain-source'
 import { createTxTracker } from '@valve-tech/tx-tracker'
 
