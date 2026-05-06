@@ -36,8 +36,14 @@
  *     so push and poll coexist safely. On subscribe failure, the cached
  *     capability downgrades to 'poll-only', surfaces via onError, and the
  *     poll cycle continues unchanged.
- *   - subscribeMempool will gain the equivalent newPendingTransactions
- *     path in a follow-up commit (Task 3 of the v0.8.0 release).
+ *   - When capabilities.newPendingTransactions === 'subscription', the source
+ *     opens a live eth_subscribe('newPendingTransactions') lazily on the first
+ *     start(). Push notifications carry a hash only — the source fetches the
+ *     full tx via eth_getTransactionByHash and emits a single-tx
+ *     NormalizedMempool snapshot. On subscribe failure, the cached capability
+ *     downgrades to poll-only (or unavailable when txpool_content is also
+ *     gated). Push and poll coexist — mempool snapshots are intentionally
+ *     not deduped (txs come and go between blocks even on a static head).
  */
 
 import type { PublicClient } from 'viem'
@@ -187,6 +193,7 @@ export const createChainSource = (
   let started = false
   let cachedCapabilities: Capabilities = PROBING_DEFAULT
   let blockSubscriptionHandle: { unsubscribe: () => void } | null = null
+  let mempoolSubscriptionHandle: { unsubscribe: () => void } | null = null
   // Dedup key for the block stream — by hash, not number, so that a
   // same-height reorg (different hash, same number) still surfaces as
   // a fresh observation. Reset on stop() so a paused-then-resumed
@@ -271,6 +278,95 @@ export const createChainSource = (
     }
   }
 
+  /**
+   * Fetch the full transaction by hash and emit a single-tx
+   * NormalizedMempool snapshot into mempoolSubs. Called from the WS
+   * `newPendingTransactions` subscription's `onData` handler for each
+   * hash-only push notification.
+   *
+   * Hash-only normalization: the WS payload carries only a hash; this
+   * function fetches the full tx and wraps it in the canonical
+   * NormalizedMempool shape so consumers see one consistent type
+   * regardless of whether the data arrived via push or poll.
+   */
+  const handleMempoolNotification = async (hash: string): Promise<void> => {
+    const tx = await fetchTransaction(
+      options.client,
+      hash,
+      errSink('eth_getTransactionByHash'),
+    )
+    if (!tx?.from || !tx.nonce) return
+    const sender = tx.from.toLowerCase()
+    let nonceKey: string
+    try {
+      nonceKey = BigInt(tx.nonce).toString(10)
+    } catch {
+      // Unparseable nonce — use the raw value rather than dropping the
+      // tx entirely; downstream lookup helpers handle unexpected keys.
+      nonceKey = tx.nonce
+    }
+    const snapshot: NormalizedMempool = {
+      pending: { [sender]: { [nonceKey]: tx } },
+      queued: {},
+    }
+    mempoolSubs.emit(snapshot)
+  }
+
+  /**
+   * Open one `eth_subscribe('newPendingTransactions')` lazily — called
+   * once the probe has resolved and confirmed
+   * `newPendingTransactions === 'subscription'`. Push notifications carry
+   * a hash only; each hash is piped through `handleMempoolNotification`
+   * which fetches the full tx and emits a single-tx NormalizedMempool
+   * snapshot. Push and poll coexist — mempool snapshots are
+   * intentionally not deduped. Failure downgrades the cached capability
+   * and surfaces via `onError`; the poll cycle continues unchanged.
+   *
+   * No idempotency flag is needed here: start() is already gated by the
+   * outer `started` flag (preventing double-subscription within one
+   * start cycle), and stop()/start() resume legitimately requires this
+   * function to run again — stop() sets mempoolSubscriptionHandle = null
+   * so the next call opens a fresh subscription cleanly.
+   */
+  const tryOpenMempoolSubscription = async (): Promise<void> => {
+    if (!fetchMempool) return
+    if (cachedCapabilities.newPendingTransactions !== 'subscription') return
+    // Cast through unknown: TypeScript's transport type doesn't model the
+    // WebSocket-specific subscribe method. The capability probe has already
+    // confirmed subscribe is present and working before we reach this point.
+    const transport = options.client.transport as unknown as {
+      subscribe: (arg: {
+        params: unknown[]
+        onData: (data: unknown) => void
+        onError: (err: unknown) => void
+      }) => Promise<{ unsubscribe: () => void }>
+    }
+    try {
+      mempoolSubscriptionHandle = await transport.subscribe({
+        params: ['newPendingTransactions'],
+        // Push notifications carry a hash (string) on most providers;
+        // some send full-tx objects — extract .hash as a fallback.
+        onData: (data: unknown) => {
+          const hash =
+            typeof data === 'string' ? data : (data as { hash?: string }).hash
+          if (!hash) return
+          void handleMempoolNotification(hash)
+        },
+        onError: (err) =>
+          options.onError?.('eth_subscribe.newPendingTransactions', err),
+      })
+    } catch (err) {
+      options.onError?.('eth_subscribe.newPendingTransactions', err)
+      cachedCapabilities = {
+        ...cachedCapabilities,
+        newPendingTransactions:
+          cachedCapabilities.txpoolContent === 'available'
+            ? 'poll-only'
+            : 'unavailable',
+      }
+    }
+  }
+
   // Eager capability probe. Fire-and-forget; consumers that need a
   // guaranteed-completed probe await source.ready().
   const readyPromise: Promise<void> = probeCapabilities(options.client, {
@@ -340,9 +436,10 @@ export const createChainSource = (
       timer = setInterval(() => {
         void tick()
       }, pollIntervalMs)
-      // Open WS subscribe lazily once the probe has landed. Fire-and-
+      // Open WS subscribes lazily once the probe has landed. Fire-and-
       // forget; failures fall through to the existing poll loop.
       void readyPromise.then(() => tryOpenBlockSubscription())
+      void readyPromise.then(() => tryOpenMempoolSubscription())
     },
 
     stop: () => {
@@ -353,6 +450,14 @@ export const createChainSource = (
           options.onError?.('eth_unsubscribe', err)
         }
         blockSubscriptionHandle = null
+      }
+      if (mempoolSubscriptionHandle) {
+        try {
+          mempoolSubscriptionHandle.unsubscribe()
+        } catch (err) {
+          options.onError?.('eth_unsubscribe', err)
+        }
+        mempoolSubscriptionHandle = null
       }
       if (timer !== null) {
         clearInterval(timer)
