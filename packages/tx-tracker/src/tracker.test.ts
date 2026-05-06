@@ -2264,6 +2264,138 @@ test('withReceipts: true + reorg — vanished then re-included fetches fresh rec
   tracker.stop()
 })
 
+test('withReceipts — concurrent block ticks: stale block N skips overwriting newer state', async () => {
+  // The race window: onBlock(N) suspends at await Promise.all(getReceipts) after the
+  // tx is first included in block N-1 and then included again in block N (fresh
+  // inclusion with a different block hash). While N's receipt fetch is deferred,
+  // onBlock(N+1) runs to completion (no tx in N+1 → confirmation-bump path,
+  // advances lastObservedAtBlock to N+1 and confirmations to 2). When N's receipt
+  // finally resolves, its deferred per-record loop would normally clobber N+1's
+  // state by writing confirmations: 1 and lastObservedAtBlock: N. The stale-block
+  // guard prevents that overwrite.
+  //
+  // Setup: two-phase getReceiptImpl —
+  //   call 1 (block N-1 inclusion): resolves immediately with a receipt
+  //   call 2 (block N re-inclusion): defers until we manually resolve it
+  let receiptCallCount = 0
+  let resolveSecondReceipt: ((r: TransactionReceipt | null) => void) | null = null
+
+  const stubSource = makeSource({
+    initialCaps: {
+      newHeads: 'subscription',
+      newPendingTransactions: 'subscription',
+      txpoolContent: 'available',
+      receiptByHash: 'available',
+      reprobeOnReconnect: true,
+    },
+    getReceiptImpl: (_hash) => {
+      receiptCallCount++
+      if (receiptCallCount === 1) {
+        // First call (block N-1): resolve immediately.
+        return Promise.resolve({
+          transactionHash: '0xt',
+          blockHash: '0xb0',
+          blockNumber: '0xf',
+          status: '0x1',
+        })
+      }
+      // Second call (block N): deferred — holds onBlock(N) suspended.
+      return new Promise<TransactionReceipt | null>((resolve) => {
+        resolveSecondReceipt = resolve
+      })
+    },
+  })
+
+  const tracker = createTxTracker({ source: stubSource, chainId: 1 })
+  tracker.start()
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), {
+    withReceipts: true,
+    emitInitial: false,
+  })
+
+  // Block N-1 (0xf): includes the tx. onBlock suspends at await Promise.all
+  // (receipt call 1), but that resolves immediately. onBlock(N-1) completes
+  // synchronously after the first microtask drain.
+  stubSource.emitBlock({
+    number: '0xf',
+    hash: '0xb0',
+    parentHash: '0x0',
+    timestamp: '0x0',
+    baseFeePerGas: '0x0',
+    gasLimit: '0x0',
+    gasUsed: '0x0',
+    transactions: [{ hash: '0xt', from: '0xs', nonce: '0x0' }],
+  })
+  await flush()
+
+  // After N-1: tx is included with confirmations: 1, lastObservedAtBlock: 0xfn.
+  const statusAfterNminus1 = tracker.getTxStatus('0xt')
+  expect(statusAfterNminus1?.lastSeenInBlock?.confirmations).toBe(1)
+  expect(statusAfterNminus1?.lastObservedAtBlock).toBe(0xfn)
+
+  // Block N (0x10): same tx, different block hash → fresh inclusion path.
+  // onBlock(N) builds targets = ['0xt'], fires getReceipt (call 2) which defers,
+  // and suspends at await Promise.all(getReceipts).
+  stubSource.emitBlock({
+    number: '0x10',
+    hash: '0xb1',
+    parentHash: '0xb0',
+    timestamp: '0x0',
+    baseFeePerGas: '0x0',
+    gasLimit: '0x0',
+    gasUsed: '0x0',
+    transactions: [{ hash: '0xt', from: '0xs', nonce: '0x0' }],
+  })
+  // Allow onBlock(N) to reach its first await (the Promise.all with deferred receipt).
+  await Promise.resolve()
+  await Promise.resolve()
+
+  // Block N+1 (0x11): tx NOT in this block → confirmation-bump path.
+  // onBlock(N+1) runs synchronously through all its paths; its await
+  // Promise.all([]) resolves immediately (no targets). Per-record loop
+  // runs: lastSeenInBlock is from N-1 (blockHash=0xb0, confirmations=1),
+  // N+1's blockHash differs → confirmation bump → confirmations=2,
+  // lastObservedAtBlock=0x11n.
+  stubSource.emitBlock({
+    number: '0x11',
+    hash: '0xb2',
+    parentHash: '0xb1',
+    timestamp: '0x0',
+    baseFeePerGas: '0x0',
+    gasLimit: '0x0',
+    gasUsed: '0x0',
+    transactions: [],
+  })
+  await flush()
+
+  // N+1's confirmation-bump must have advanced lastObservedAtBlock to 0x11n.
+  const statusAfterNplus1 = tracker.getTxStatus('0xt')
+  expect(statusAfterNplus1?.lastObservedAtBlock).toBe(0x11n)
+  expect(statusAfterNplus1?.lastSeenInBlock?.confirmations).toBeGreaterThanOrEqual(2)
+
+  // Resolve block N's receipt — without the stale-block guard, block N's
+  // deferred per-record loop would clobber the newer state from N+1 by
+  // writing confirmations: 1 and lastObservedAtBlock: 0x10n.
+  resolveSecondReceipt!({
+    transactionHash: '0xt',
+    blockHash: '0xb1',
+    blockNumber: '0x10',
+    status: '0x1',
+  })
+  await flush()
+
+  // The stale-block guard must have prevented block N's deferred loop from
+  // overwriting block N+1's state.
+  const finalStatus = tracker.getTxStatus('0xt')
+  expect(finalStatus?.lastObservedAtBlock).toBe(0x11n)
+  // Confirmations must still reflect N+1's bump (≥ 2), not reset to 1 by block N.
+  expect(finalStatus?.lastSeenInBlock?.confirmations).toBeGreaterThanOrEqual(2)
+
+  tracker.stop()
+})
+
 test('withReceipts: true + stop() resets gate — second start() warns again on capability miss', async () => {
   const onError = vi.fn()
   const source = makeSource({

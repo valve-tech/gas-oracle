@@ -742,6 +742,15 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     // mutable record and emits the returned events.
     const envelope = buildAt()
     for (const record of tracked.values()) {
+      // Stale-block guard: if a concurrent onBlock invocation (block N+1)
+      // already advanced this record past the block we're processing here
+      // (block N), skip applying our stale statusPatch. The async pre-fetch
+      // for withReceipts opened this interleave window — without this guard
+      // we'd clobber the newer state with older data.
+      const recordedSince = record.status.lastObservedAtBlock
+      if (recordedSince !== null && recordedSince > blockNumber) {
+        continue
+      }
       const result = decideBlockObservation({
         record,
         blockHash,
