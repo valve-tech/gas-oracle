@@ -3,7 +3,7 @@ import { test, expect, vi } from 'vitest'
 import { replaceTransaction } from './replace-transaction.js'
 
 test('replaceTransaction — sends a same-nonce write with bumped gas', async () => {
-  const sendTransaction = vi.fn(async () => '0xnewhash' as const)
+  const sendTransaction = vi.fn(async (_req: unknown) => '0xnewhash' as const)
   const walletClient = {
     account: { address: '0xacct' },
     sendTransaction,
@@ -54,7 +54,7 @@ test('replaceTransaction — throws when walletClient has no account', async () 
 test('replaceTransaction — propagates walletClient errors', async () => {
   const walletClient = {
     account: { address: '0xa' },
-    sendTransaction: vi.fn(async () => {
+    sendTransaction: vi.fn(async (_req: unknown) => {
       throw new Error('user rejected')
     }),
   } as never
@@ -68,7 +68,7 @@ test('replaceTransaction — propagates walletClient errors', async () => {
 })
 
 test('replaceTransaction — handles original without data and value', async () => {
-  const sendTransaction = vi.fn(async () => '0xh' as const)
+  const sendTransaction = vi.fn(async (_req: unknown) => '0xh' as const)
   const walletClient = {
     account: { address: '0xa' },
     sendTransaction,
@@ -87,7 +87,7 @@ test('replaceTransaction — handles original without data and value', async () 
 })
 
 test('replaceTransaction — passes account from walletClient', async () => {
-  const sendTransaction = vi.fn(async () => '0xhash' as const)
+  const sendTransaction = vi.fn(async (_req: unknown) => '0xhash' as const)
   const account = { address: '0xabcdef' }
   const walletClient = { account, sendTransaction } as never
 
@@ -102,7 +102,7 @@ test('replaceTransaction — passes account from walletClient', async () => {
 })
 
 test('replaceTransaction — chain is null in the request', async () => {
-  const sendTransaction = vi.fn(async () => '0xhash' as const)
+  const sendTransaction = vi.fn(async (_req: unknown) => '0xhash' as const)
   const walletClient = {
     account: { address: '0xa' },
     sendTransaction,
