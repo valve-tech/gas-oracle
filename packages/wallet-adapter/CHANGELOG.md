@@ -6,6 +6,19 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] — 2026-05-06
+
+### Notes
+
+- Synchronized release — no changes to this package. Bumped in
+  lockstep with `@valve-tech/tx-tracker@0.7.0` (the first real
+  implementation release of the per-tx state machine that
+  wallet-adapter's `WriteHookParams` contract — `onTransactionHash`,
+  `onDropped`, `onReplaced` — is designed to fire against).
+  Consumers wiring tx-tracker into wallet-adapter writes will now
+  see real `seen-in-block` / `replaced-by` / `unseen-for-N-blocks`
+  events instead of stub no-ops.
+
 ## [0.6.0] — 2026-05-05
 
 ### Notes

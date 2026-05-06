@@ -6,7 +6,13 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.7.0] — 2026-05-06
+
+> **The implementation lands.** This is the first release of
+> `@valve-tech/tx-tracker` with a real public surface. Prior versions
+> (v0.0.1 → v0.6.0) were stubs reserving the npm name. The full
+> design contract is at `docs/tx-tracker-spec.md` in the
+> `valve-tech/evm-toolkit` repo.
 
 ### Added
 

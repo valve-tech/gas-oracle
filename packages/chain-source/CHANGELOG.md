@@ -6,6 +6,21 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] — 2026-05-06
+
+### Notes
+
+- Synchronized release — no consumer-visible changes to this package.
+  Bumped in lockstep with `@valve-tech/tx-tracker@0.7.0`, the
+  long-promised v0.3.x track ChainSource was built to feed (per
+  `docs/tx-tracker-spec.md` §3.1). chain-source itself stays
+  byte-identical with v0.6.0's dist; this release exists so
+  consumers running `npm view @valve-tech/chain-source versions`
+  see the toolkit-wide line is at v0.7.0.
+- Internal-only: the workspace test suite is now at 100/100/100/100
+  coverage on this package (was 97/97/97/98). No new exports, no
+  behavior change.
+
 ## [0.6.0] — 2026-05-05
 
 ### Added
