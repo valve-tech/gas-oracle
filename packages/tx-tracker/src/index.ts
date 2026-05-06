@@ -49,6 +49,8 @@ export type {
   TxMatchEvent,
   TxSubscription,
   LostSignalPolicy,
+  GroupOptions,
+  TxGroupSubscription,
 } from './tracker.js'
 
 export {
@@ -110,3 +112,20 @@ export {
   matchAll,
 } from './selectors.js'
 export type { BulkMatchPayload, CompiledSelector } from './selectors.js'
+
+export { createTxGroup } from './group.js'
+
+export {
+  buildGroupComplete,
+  buildGroupFailed,
+  buildGroupProgress,
+  buildGroupStopped,
+} from './group-events.js'
+export type {
+  TxGroupEvent,
+  TxGroupEventComplete,
+  TxGroupEventEnvelope,
+  TxGroupEventFailed,
+  TxGroupEventProgress,
+  TxGroupEventStopped,
+} from './group-events.js'

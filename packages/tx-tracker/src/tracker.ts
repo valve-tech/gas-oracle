@@ -47,6 +47,9 @@ import type {
 } from '@valve-tech/chain-source'
 import { Subscriptions } from '@valve-tech/chain-source'
 
+import { createTxGroup } from './group.js'
+import type { TxGroupEvent } from './group-events.js'
+
 import {
   buildSeenInBlock,
   buildSignalDegraded,
@@ -205,6 +208,36 @@ export interface CreateTxTrackerOptions {
   lifecycle?: 'eager' | 'lazy'
 }
 
+/**
+ * Options for a group subscription. All fields are optional — the group
+ * works with defaults. See `createTxGroup` in `group.ts`.
+ */
+export interface GroupOptions {
+  /** Optional human-readable group ID echoed in events. Default: random. */
+  groupId?: string
+  /** Per-member TrackOptions applied to each hash. */
+  memberOptions?: TrackOptions
+}
+
+/**
+ * Handle returned by `tracker.group(hashes, options?)`. Exposes three
+ * consumption shapes (async iterator, callback, snapshot) over the same
+ * group-event stream, plus a `stop()` to tear down all member
+ * subscriptions.
+ */
+export interface TxGroupSubscription {
+  /** Async-iterable surface over the group event stream. */
+  events(): AsyncIterable<TxGroupEvent>
+  /**
+   * Imperative callback subscription. Returns an unsubscribe handle.
+   */
+  subscribe(cb: (event: TxGroupEvent) => void): () => void
+  /** Snapshot of each member's current `TxStatus` (null if not yet observed). */
+  snapshot(): Record<Hash, TxStatus | null>
+  /** Tear down all member subscriptions and emit `group-stopped`. */
+  stop(): void
+}
+
 /** Public surface returned by `createTxTracker`. */
 export interface TxTracker {
   start(): void
@@ -227,6 +260,13 @@ export interface TxTracker {
   ): TxSubscription
   capabilities(): Capabilities
   subscribeAll(cb: (event: TxEvent) => void): () => void
+  /**
+   * Cross-tx correlation — track a logical group of related hashes
+   * (e.g., a wallet's "claim + swap" pair). Emits group-level
+   * synthesis events derived from the per-member event streams.
+   * See spec §18.1, v0.8.0 design F3.
+   */
+  group(hashes: Hash[], options?: GroupOptions): TxGroupSubscription
 }
 
 // -----------------------------------------------------------------
@@ -1374,7 +1414,7 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     // distinction in v0.6.x affects internal book-keeping only.
   }
 
-  return {
+  const trackerSurface: TxTracker = {
     start,
     stop,
     getTxStatus: (hash) => {
@@ -1388,5 +1428,7 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     trackPredicate,
     capabilities: () => source.capabilities(),
     subscribeAll,
+    group: (hashes, opts) => createTxGroup(trackerSurface, hashes, opts),
   }
+  return trackerSurface
 }
