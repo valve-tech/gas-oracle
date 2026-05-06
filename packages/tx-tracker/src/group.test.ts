@@ -679,6 +679,33 @@ test('group — terminal flag prevents post-complete events from firing', () => 
 // Coverage: events() async iterator return() cleanly tears down
 // ---------------------------------------------------------------------------
 
+test('group — multiple parked waiters drain on terminal event', async () => {
+  // Park three concurrent next() calls before any event arrives, then emit
+  // a terminal event. First waiter receives the terminal value; the other
+  // two resolve with done:true via the drain loop in the subscribe callback.
+  const source = makeSource()
+  const tracker = startTracker(source)
+  const group = tracker.group(['0xdrain1'], { groupId: 'drain-test' })
+  const iter = group.events()[Symbol.asyncIterator]()
+
+  const p1 = iter.next()
+  const p2 = iter.next()
+  const p3 = iter.next()
+
+  // Emit the terminal event — group-complete since the single member confirmed.
+  source.emitBlock(
+    makeBlock(1n, '0xb1', [{ hash: '0xdrain1', from: '0xs', nonce: '0x0' }]),
+  )
+
+  const [r1, r2, r3] = await Promise.all([p1, p2, p3])
+  expect(r1.done).toBe(false)
+  expect(r1.value.kind).toBe('group-complete')
+  expect(r2.done).toBe(true)
+  expect(r3.done).toBe(true)
+
+  tracker.stop()
+})
+
 test('group — async iterator return() tears down cleanly', async () => {
   const source = makeSource()
   const tracker = startTracker(source)

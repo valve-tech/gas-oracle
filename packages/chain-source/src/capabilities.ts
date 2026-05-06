@@ -58,13 +58,14 @@ const probeSubscribeShape = async (
   try {
     const sub = await transport.subscribe({
       params: ['newHeads'],
-      // No-op stubs: the probe unsubscribes immediately, so neither
-      // callback is ever invoked. Required by the transport's
-      // subscribe contract; ignored at runtime.
-      /* c8 ignore start */
+      // No-op stubs: the transport.subscribe contract requires both
+      // callbacks. The probe unsubscribes immediately, so on most
+      // upstreams these never fire — but some viem transports invoke
+      // onData / onError synchronously during subscribe (queued head
+      // event or setup error). Both paths must be a safe no-op so the
+      // probe's only signal is the resolved/rejected outer promise.
       onData: () => {},
       onError: () => {},
-      /* c8 ignore stop */
     } as unknown as Parameters<typeof transport.subscribe>[0])
     sub.unsubscribe()
     return 'subscription'

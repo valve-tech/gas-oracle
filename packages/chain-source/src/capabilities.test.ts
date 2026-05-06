@@ -151,6 +151,9 @@ test('probeCapabilities routes receipt-probe failures to onError', async () => {
 test('probeCapabilities — WS subscribe live-probe success', async () => {
   let subscribeCalls = 0
   const fakeUnsub = vi.fn()
+  // Some viem transports invoke onData / onError synchronously during
+  // subscribe (queued head event or setup error). The probe must treat
+  // both as safe no-ops; this mock exercises both callback paths.
   const client = {
     request: vi.fn(async ({ method }: { method: string }) => {
       if (method === 'txpool_content') return { pending: {}, queued: {} }
@@ -159,10 +162,18 @@ test('probeCapabilities — WS subscribe live-probe success', async () => {
     }),
     transport: {
       type: 'webSocket',
-      subscribe: vi.fn(async () => {
-        subscribeCalls++
-        return { unsubscribe: fakeUnsub }
-      }),
+      subscribe: vi.fn(
+        async (arg: {
+          params: unknown[]
+          onData: (data: unknown) => void
+          onError: (err: unknown) => void
+        }) => {
+          subscribeCalls++
+          arg.onData('synthetic-head')
+          arg.onError(new Error('synthetic-setup-error'))
+          return { unsubscribe: fakeUnsub }
+        },
+      ),
     },
   } as unknown as PublicClient
 

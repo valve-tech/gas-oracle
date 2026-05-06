@@ -77,40 +77,25 @@ export const waitForTransaction = (
       onError: options.onError,
     })
 
-    const ownsSource = !internalOptions._sourceOverride
-    if (ownsSource) source.start()
+    source.start()
     tracker.start()
 
     let teardownSubscribe: (() => void) | null = null
-    let settled = false
 
+    // No `settled` flag: tracker.stop() / source.stop() / teardownSubscribe
+    // are all idempotent, and Promise resolve is a no-op on second call.
+    // The first finish() detaches the subscription, so subsequent events
+    // for this hash don't reach the callback — no double-call path remains.
     const finish = (outcome: WaitForTransactionOutcome): void => {
-      // Belt-and-braces: the inner-callback `if (settled) return` guard
-      // below prevents finish() from being called twice through the
-      // public surface, so this truthy branch is unreachable in single-
-      // threaded JS. Kept as defense against future bypass paths.
-      /* c8 ignore next */
-      if (settled) return
-      settled = true
       teardownSubscribe?.()
       tracker.stop()
-      // Test seam: tests inject `_sourceOverride` (ownsSource=false), so
-      // the truthy-arm of this branch is unreachable through the test
-      // fixtures. In production callers never set `_sourceOverride`, so
-      // ownsSource is always true and source.stop() always runs.
-      /* c8 ignore next */
-      if (ownsSource) source.stop()
+      source.stop()
       resolve(outcome)
     }
 
     teardownSubscribe = tracker.subscribe(
       options.hash,
       (event) => {
-        // Inner-callback re-entry guard. Reachable only if a delayed
-        // event arrives after the helper already settled on a prior
-        // event — current tests resolve on the first qualifying event.
-        /* c8 ignore next */
-        if (settled) return
         if (event.kind === 'seen-in-block' && event.confirmations >= confirmations) {
           if (options.withReceipts && event.receipt && event.receipt.status === '0x0') {
             finish({ status: 'failed', event, receipt: event.receipt })

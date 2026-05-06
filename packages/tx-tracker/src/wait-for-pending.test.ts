@@ -286,9 +286,13 @@ test('pollIntervalMs is passed through to the real ChainSource path', () => {
   }).not.toThrow()
 })
 
-test('ownsSource=false path: source.stop() NOT called when _sourceOverride is provided', async () => {
+test('source.stop() and source.start() are called as part of helper lifecycle', async () => {
+  // The helper owns the source's lifecycle: start on construction, stop on
+  // settle. Tests inject sources via `_sourceOverride` purely as a stub for
+  // hermetic testing — the helper still drives start/stop on it.
   const source = makeStubSource()
-  const stubStop = vi.spyOn(source, 'stop')
+  const startSpy = vi.spyOn(source, 'start')
+  const stopSpy = vi.spyOn(source, 'stop')
 
   const promise = waitForPending(makeOptions(source, { hash: HASH }))
 
@@ -299,8 +303,8 @@ test('ownsSource=false path: source.stop() NOT called when _sourceOverride is pr
 
   await promise
 
-  // With _sourceOverride, ownsSource=false, so source.stop() must NOT be called.
-  expect(stubStop).not.toHaveBeenCalled()
+  expect(startSpy).toHaveBeenCalledOnce()
+  expect(stopSpy).toHaveBeenCalledOnce()
 })
 
 test('resolves with distinct hash — does not fire for unrelated hashes', async () => {
