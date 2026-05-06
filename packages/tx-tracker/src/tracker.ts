@@ -482,6 +482,7 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     if (record.subs.size() > 0) return
     if (record.hasDurableSub) return
     tracked.delete(record.hash)
+    blocksSinceLastReceiptPoll.delete(record.hash)
   }
 
   // -------------------------------------------------------------
@@ -568,6 +569,10 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
       return
     }
 
+    // Record was unsubscribed while getReceipt was in-flight; bail out rather
+    // than emit on an orphaned record.
+    if (!tracked.has(record.hash)) return
+
     emit(
       record,
       buildSeenInBlock({
@@ -582,14 +587,20 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
       }),
     )
     // Mirror state-machine bookkeeping so getTxStatus reflects inclusion.
-    record.status.lastSeenInBlock = {
-      blockHash: receipt.blockHash,
-      blockNumber: receiptBlockNumber,
-      transactionIndex: 0,
-      confirmations: 1,
-      source: 'receipt-poll',
+    // Set lastObservedAtBlock to the chain tip (the block that triggered this
+    // poll) rather than the receipt's inclusion block, so the retention window
+    // expiry advances with the chain even for old inclusions polled later.
+    record.status = {
+      ...record.status,
+      lastSeenInBlock: {
+        blockHash: receipt.blockHash,
+        blockNumber: receiptBlockNumber,
+        transactionIndex: 0,
+        confirmations: 1,
+        source: 'receipt-poll',
+      },
+      lastObservedAtBlock: tipBlockNumber,
     }
-    record.status.lastObservedAtBlock = tipBlockNumber
   }
 
   // -------------------------------------------------------------
