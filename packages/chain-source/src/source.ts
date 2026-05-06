@@ -192,6 +192,20 @@ export const createChainSource = (
   let timer: ReturnType<typeof setInterval> | null = null
   let started = false
   let cachedCapabilities: Capabilities = PROBING_DEFAULT
+  /**
+   * Narrow the viem transport to its WebSocket-specific `subscribe` shape once.
+   * viem's `Transport` type does not model this method; we structurally narrow
+   * through `unknown` here and reuse the result in both `tryOpen*Subscription`
+   * functions rather than redeclaring the cast in each.
+   */
+  const wsTransport = options.client.transport as unknown as {
+    subscribe: (arg: {
+      params: unknown[]
+      onData: (data: unknown) => void
+      onError: (err: unknown) => void
+    }) => Promise<{ unsubscribe: () => void }>
+  }
+
   let blockSubscriptionHandle: { unsubscribe: () => void } | null = null
   let mempoolSubscriptionHandle: { unsubscribe: () => void } | null = null
   // Dedup key for the block stream — by hash, not number, so that a
@@ -253,18 +267,8 @@ export const createChainSource = (
    */
   const tryOpenBlockSubscription = async (): Promise<void> => {
     if (cachedCapabilities.newHeads !== 'subscription') return
-    // Cast through unknown: TypeScript's transport type doesn't model the
-    // WebSocket-specific subscribe method. The capability probe has already
-    // confirmed subscribe is present and working before we reach this point.
-    const transport = options.client.transport as unknown as {
-      subscribe: (arg: {
-        params: unknown[]
-        onData: (data: unknown) => void
-        onError: (err: unknown) => void
-      }) => Promise<{ unsubscribe: () => void }>
-    }
     try {
-      blockSubscriptionHandle = await transport.subscribe({
+      blockSubscriptionHandle = await wsTransport.subscribe({
         params: ['newHeads'],
         // Head notifications: fetch the full block at the tip and emit
         // through the existing dedup machinery. Hash dedup in blockSubs
@@ -273,7 +277,7 @@ export const createChainSource = (
         onError: (err) => options.onError?.('eth_subscribe.newHeads', err),
       })
     } catch (err) {
-      options.onError?.('eth_subscribe', err)
+      options.onError?.('eth_subscribe.newHeads', err)
       cachedCapabilities = { ...cachedCapabilities, newHeads: 'poll-only' }
     }
   }
@@ -331,18 +335,8 @@ export const createChainSource = (
   const tryOpenMempoolSubscription = async (): Promise<void> => {
     if (!fetchMempool) return
     if (cachedCapabilities.newPendingTransactions !== 'subscription') return
-    // Cast through unknown: TypeScript's transport type doesn't model the
-    // WebSocket-specific subscribe method. The capability probe has already
-    // confirmed subscribe is present and working before we reach this point.
-    const transport = options.client.transport as unknown as {
-      subscribe: (arg: {
-        params: unknown[]
-        onData: (data: unknown) => void
-        onError: (err: unknown) => void
-      }) => Promise<{ unsubscribe: () => void }>
-    }
     try {
-      mempoolSubscriptionHandle = await transport.subscribe({
+      mempoolSubscriptionHandle = await wsTransport.subscribe({
         params: ['newPendingTransactions'],
         // Push notifications carry a hash (string) on most providers;
         // some send full-tx objects — extract .hash as a fallback.

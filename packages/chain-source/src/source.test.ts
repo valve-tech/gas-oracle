@@ -881,7 +881,7 @@ test('subscribeBlocks — lazy subscribe throw after probe success downgrades to
   await flush()
 
   // Lazy subscribe threw → onError fired + capability downgraded to poll-only.
-  expect(onError).toHaveBeenCalledWith('eth_subscribe', expect.any(Error))
+  expect(onError).toHaveBeenCalledWith('eth_subscribe.newHeads', expect.any(Error))
   expect(source.capabilities().newHeads).toBe('poll-only')
   // Poll loop still delivers blocks.
   await new Promise((r) => setTimeout(r, 12))
@@ -1209,7 +1209,7 @@ test('subscribeBlocks — WS stream onError without options.onError does not thr
   // Exercises the false branch of `options.onError?.()` in the stream-level
   // onError callback — when no onError handler is provided, the optional chain
   // short-circuits without throwing.
-  let subscribeCallCount = 0
+  let newHeadsCallCount = 0
   let capturedStreamOnError: ((err: unknown) => void) | null = null
   const subscribe = vi.fn(
     async (arg: {
@@ -1217,8 +1217,16 @@ test('subscribeBlocks — WS stream onError without options.onError does not thr
       onData: (data: unknown) => void
       onError: (err: unknown) => void
     }): Promise<{ unsubscribe: () => void }> => {
-      subscribeCallCount++
-      if (subscribeCallCount === 1) return { unsubscribe: vi.fn() }
+      if (arg.params[0] !== 'newHeads') {
+        // mempool sub — no-op; not the path under test
+        return { unsubscribe: vi.fn() }
+      }
+      newHeadsCallCount++
+      if (newHeadsCallCount === 1) {
+        // first newHeads call is the probe
+        return { unsubscribe: vi.fn() }
+      }
+      // second newHeads call is the live block subscription
       capturedStreamOnError = arg.onError
       return { unsubscribe: vi.fn() }
     },
