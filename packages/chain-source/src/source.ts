@@ -202,18 +202,9 @@ export const createChainSource = (
     options.onError ? (err: unknown) => options.onError!(method, err) : undefined
 
   /**
-   * Open one `eth_subscribe('newHeads')` lazily — called once the probe
-   * has resolved and confirmed `newHeads === 'subscription'`. Head
-   * notifications are piped through the existing `fetchBlock + dedup-
-   * by-hash` machinery so push and poll coexist safely. Failure
-   * downgrades the cached capability to `'poll-only'` and surfaces via
-   * `onError`; the existing poll cycle continues unchanged.
-   */
-  /**
-   * Fetch the full block at 'latest' and emit it through the existing
+   * Fetch the full block at 'latest' and pipe it through the existing
    * dedup machinery. Called from the WS `newHeads` subscription's
-   * `onData` handler. Extracted from the IIFE to give v8 coverage a
-   * stable function boundary to track.
+   * `onData` handler whenever a head notification arrives.
    */
   const handleHeadNotification = async (): Promise<void> => {
     const block = await fetchBlock(
@@ -234,6 +225,14 @@ export const createChainSource = (
     }
   }
 
+  /**
+   * Open one `eth_subscribe('newHeads')` lazily — called once the probe
+   * has resolved and confirmed `newHeads === 'subscription'`. Head
+   * notifications are piped through `handleHeadNotification` + the
+   * existing dedup machinery so push and poll coexist safely. Failure
+   * downgrades the cached capability to `'poll-only'` and surfaces via
+   * `onError`; the existing poll cycle continues unchanged.
+   */
   const tryOpenBlockSubscription = async (): Promise<void> => {
     if (cachedCapabilities.newHeads !== 'subscription') return
     // Cast through unknown: TypeScript's transport type doesn't model the
