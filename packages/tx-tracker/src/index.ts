@@ -144,3 +144,10 @@ export type {
   TxGroupEventProgress,
   TxGroupEventStopped,
 } from './group-events.js'
+
+export { replaceTransaction } from './replace-transaction.js'
+export type {
+  ReplaceTransactionNewGas,
+  ReplaceTransactionOptions,
+  ReplaceTransactionOriginal,
+} from './replace-transaction.js'
