@@ -8,14 +8,15 @@
  * blob fee) is handled here rather than at higher layers.
  */
 
-import type {
+import {
   PriorityModel,
-  RawTx,
-  TierRecommendation,
   TierName,
-  TipPercentiles,
-  TipSample,
   Trend,
+  TxType,
+  type RawTx,
+  type TierRecommendation,
+  type TipPercentiles,
+  type TipSample,
 } from './types.js'
 
 const TREND_RISING_THRESHOLD_PCT = 10n
@@ -93,14 +94,14 @@ export const sortedTips = (txs: RawTx[], baseFee: bigint): bigint[] =>
  * returns 'stable'.
  */
 export const detectTrend = (history: bigint[]): Trend => {
-  if (history.length < 2) return 'stable'
+  if (history.length < 2) return Trend.stable
   const first = history[0]
   const last = history[history.length - 1]
-  if (first === 0n) return last > 0n ? 'rising' : 'stable'
+  if (first === 0n) return last > 0n ? Trend.rising : Trend.stable
   const change = ((last - first) * 100n) / first
-  if (change > TREND_RISING_THRESHOLD_PCT) return 'rising'
-  if (change < TREND_FALLING_THRESHOLD_PCT) return 'falling'
-  return 'stable'
+  if (change > TREND_RISING_THRESHOLD_PCT) return Trend.rising
+  if (change < TREND_FALLING_THRESHOLD_PCT) return Trend.falling
+  return Trend.stable
 }
 
 /**
@@ -152,10 +153,10 @@ export const cappedTip = (
  * than chasing the spam lane at p25.
  */
 const TIER_PERCENTILE: Array<[TierName, number]> = [
-  ['slow', 10],
-  ['standard', 50],
-  ['fast', 75],
-  ['instant', 90],
+  [TierName.slow, 10],
+  [TierName.standard, 50],
+  [TierName.fast, 75],
+  [TierName.instant, 90],
 ]
 
 /**
@@ -245,7 +246,7 @@ const baseFeeBufferMultiplier = (
   trend: Trend,
   livenessBlocks: number,
 ): { num: bigint; den: bigint } => {
-  if (trend === 'falling') return { num: 1n, den: 1n }
+  if (trend === Trend.falling) return { num: 1n, den: 1n }
 
   let num = 1n
   let den = 1n
@@ -253,7 +254,7 @@ const baseFeeBufferMultiplier = (
     num *= 9n
     den *= 8n
   }
-  if (trend === 'rising') {
+  if (trend === Trend.rising) {
     num *= 10n
     den *= 9n
   }
@@ -263,15 +264,13 @@ const baseFeeBufferMultiplier = (
 /**
  * `priorityModel` cutoff: which tx types count as "paying lane."
  *
- * A sample is in the paying lane iff its `txType >= EIP1559_TYPE_CUTOFF`
+ * A sample is in the paying lane iff its `txType >= TxType.eip1559`
  * (≥ 2). Samples without a captured `txType` are excluded from the
  * paying-lane filter — better to under-count than to mis-bucket a
  * legacy tx into the priority lane and pull the recommendation up.
  */
-const EIP1559_TYPE_CUTOFF = 2
-
 const isPayingLaneSample = (sample: TipSample): boolean =>
-  sample.txType !== undefined && sample.txType >= EIP1559_TYPE_CUTOFF
+  sample.txType !== undefined && sample.txType >= TxType.eip1559
 
 /**
  * Concatenate ring + mempool samples into one gas-weighted distribution
@@ -335,7 +334,7 @@ export const computeTiers = (input: {
     input.priorityFeeDecayCap === undefined
       ? DEFAULT_PRIORITY_FEE_DECAY_CAP
       : input.priorityFeeDecayCap
-  const priorityModel: PriorityModel = input.priorityModel ?? 'flat'
+  const priorityModel: PriorityModel = input.priorityModel ?? PriorityModel.flat
 
   const combined = [...input.ringSamples, ...input.mempoolSamples]
   const targets = TIER_PERCENTILE.map(([, p]) => p)
@@ -347,7 +346,7 @@ export const computeTiers = (input: {
   // Paying-lane percentiles only computed when the model demands them;
   // saves one pass on the much-more-common 'flat' path.
   const payingLanePercentiles =
-    priorityModel === 'eip1559'
+    priorityModel === PriorityModel.eip1559
       ? gasWeightedPercentiles(combined.filter(isPayingLaneSample), targets)
       : null
 
@@ -355,7 +354,7 @@ export const computeTiers = (input: {
   const publishedTips = {} as Record<TierName, bigint>
 
   for (const [name, percentileTarget] of TIER_PERCENTILE) {
-    const useFiltered = payingLanePercentiles !== null && name !== 'slow'
+    const useFiltered = payingLanePercentiles !== null && name !== TierName.slow
     const source = useFiltered ? payingLanePercentiles : fullPercentiles
     const rawTip = source[percentileTarget]
     const tip = cappedTip(

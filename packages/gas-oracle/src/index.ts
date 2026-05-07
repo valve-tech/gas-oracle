@@ -53,16 +53,16 @@ export type {
   RawTx,
   TipPercentiles,
   TierRecommendation,
-  TierName,
-  Trend,
   MempoolStats,
   BlobStats,
   BlockSample,
   GasOracleState,
   TipSample,
-  PriorityModel,
   PollOptions,
 } from './types.js'
+
+// Const-namespace pairs (value + type share the identifier — see types.ts).
+export { PriorityModel, TierName, Trend, TxType } from './types.js'
 
 // Mempool inspection
 export {

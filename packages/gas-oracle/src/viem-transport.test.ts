@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Transport } from 'viem'
 
 import { withGasOracle } from './viem-transport.js'
+import { TierName } from './types.js'
 
 const hex = (n: bigint) => '0x' + n.toString(16)
 
@@ -72,10 +73,10 @@ describe('withGasOracle', () => {
     } as never)) as { baseFee: string; tiers: Record<string, Record<string, string>> }
 
     expect(result.baseFee).toBe(hex(1_000_000_000n))
-    expect(result.tiers).toHaveProperty('slow')
-    expect(result.tiers).toHaveProperty('standard')
-    expect(result.tiers).toHaveProperty('fast')
-    expect(result.tiers).toHaveProperty('instant')
+    expect(result.tiers).toHaveProperty(TierName.slow)
+    expect(result.tiers).toHaveProperty(TierName.standard)
+    expect(result.tiers).toHaveProperty(TierName.fast)
+    expect(result.tiers).toHaveProperty(TierName.instant)
     wrapped.stopGasOracle()
   })
 
@@ -103,7 +104,7 @@ describe('withGasOracle', () => {
     const wrapped = withGasOracle(transport, {
       chainId: 1,
       lifecycle: 'lazy',
-      intercept: { eth_gasPrice: 'fast' },
+      intercept: { eth_gasPrice: TierName.fast },
     })
     const instance = wrapped({})
 
@@ -124,7 +125,7 @@ describe('withGasOracle', () => {
     const wrapped = withGasOracle(transport, {
       chainId: 1,
       lifecycle: 'lazy',
-      intercept: { eth_maxPriorityFeePerGas: 'fast' },
+      intercept: { eth_maxPriorityFeePerGas: TierName.fast },
     })
     const instance = wrapped({})
 
@@ -153,7 +154,7 @@ describe('withGasOracle', () => {
       chainId: 1,
       lifecycle: 'lazy',
       // even an explicit attempt at "intercept everything" must not eat fee history
-      intercept: { eth_gasPrice: 'fast', eth_maxPriorityFeePerGas: 'fast' },
+      intercept: { eth_gasPrice: TierName.fast, eth_maxPriorityFeePerGas: TierName.fast },
     })
     const instance = wrapped({})
 
@@ -178,7 +179,7 @@ describe('withGasOracle', () => {
     const wrapped = withGasOracle(transport, {
       chainId: 1,
       lifecycle: 'lazy',
-      intercept: { eth_gasPrice: 'fast' },
+      intercept: { eth_gasPrice: TierName.fast },
     })
     const instance = wrapped({})
 
@@ -377,7 +378,7 @@ describe('withGasOracle', () => {
     const wrapped = withGasOracle(transport, {
       chainId: 1,
       lifecycle: 'lazy',
-      intercept: { eth_gasPrice: 'fast' },
+      intercept: { eth_gasPrice: TierName.fast },
     })
     const instance = wrapped({})
     const result = (await instance.request({
@@ -419,7 +420,7 @@ describe('withGasOracle', () => {
     const wrapped = withGasOracle(transport, {
       chainId: 1,
       lifecycle: 'lazy',
-      intercept: { eth_maxPriorityFeePerGas: 'standard' },
+      intercept: { eth_maxPriorityFeePerGas: TierName.standard },
     })
     const instance = wrapped({})
     const result = (await instance.request({

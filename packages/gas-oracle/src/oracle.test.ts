@@ -4,7 +4,7 @@ import type { BlockResult, ChainSource, NormalizedMempool } from '@valve-tech/ch
 
 import { createGasOracle, reducePollInputs } from './oracle.js'
 import type { OraclePollInputs } from './transport.js'
-import type { GasOracleState } from './types.js'
+import { PriorityModel, Trend, type GasOracleState } from './types.js'
 
 /* -------------------------------------------------------------------------- */
 /*  reducePollInputs (pure function)                                          */
@@ -172,7 +172,7 @@ describe('reducePollInputs', () => {
     expect(second!.blob).not.toBeNull()
     // Trend was computed from a 2-element history (prev → current)
     // rather than a singleton — verifies the prev-arm took effect.
-    expect(['rising', 'falling', 'stable']).toContain(second!.blob!.blobBaseFeeTrend)
+    expect([Trend.rising, Trend.falling, Trend.stable]).toContain(second!.blob!.blobBaseFeeTrend)
   })
 
   it('defaults blobGasUsed to 0 when block has excessBlobGas but not blobGasUsed', () => {
@@ -696,7 +696,7 @@ describe('createGasOracle', () => {
       ] as never,
     })
 
-    const buildOracle = (priorityModel: 'flat' | 'eip1559') => {
+    const buildOracle = (priorityModel: PriorityModel) => {
       const { client } = stubClient((method) => {
         if (method === 'eth_getBlockByNumber') return mixedBlock()
         return null
@@ -704,8 +704,8 @@ describe('createGasOracle', () => {
       return createGasOracle({ client, chainId: 1, priorityModel })
     }
 
-    const flat = await buildOracle('flat').pollOnce()
-    const eip = await buildOracle('eip1559').pollOnce()
+    const flat = await buildOracle(PriorityModel.flat).pollOnce()
+    const eip = await buildOracle(PriorityModel.eip1559).pollOnce()
 
     expect(flat).not.toBeNull()
     expect(eip).not.toBeNull()
@@ -1530,7 +1530,7 @@ describe('sampleGasFees', () => {
     const state = await sampleGasFees({
       client,
       chainId: 369,
-      priorityModel: 'flat',
+      priorityModel: PriorityModel.flat,
       priorityFeeDecayCap: 100_000_000n,
     })
     expect(state?.chainId).toBe(369)

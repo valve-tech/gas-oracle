@@ -50,9 +50,20 @@ export interface TierRecommendation {
   maxFeePerBlobGas: bigint | null
 }
 
-export type Trend = 'rising' | 'falling' | 'stable'
+export const Trend = {
+  rising: 'rising',
+  falling: 'falling',
+  stable: 'stable',
+} as const
+export type Trend = (typeof Trend)[keyof typeof Trend]
 
-export type TierName = 'slow' | 'standard' | 'fast' | 'instant'
+export const TierName = {
+  slow: 'slow',
+  standard: 'standard',
+  fast: 'fast',
+  instant: 'instant',
+} as const
+export type TierName = (typeof TierName)[keyof typeof TierName]
 
 export interface MempoolStats {
   pendingCount: number
@@ -113,7 +124,25 @@ export interface TipSample {
  * Future cutoffs can be added (e.g. `'eip4844'` for blob-only priority)
  * without re-interpreting existing values.
  */
-export type PriorityModel = 'flat' | 'eip1559'
+export const PriorityModel = {
+  flat: 'flat',
+  eip1559: 'eip1559',
+} as const
+export type PriorityModel = (typeof PriorityModel)[keyof typeof PriorityModel]
+
+/**
+ * EIP-2718 transaction type bytes. Identifier values — never participate
+ * in arithmetic, so they stay `number` per the package-wide bigint
+ * carve-out.
+ */
+export const TxType = {
+  legacy: 0,
+  eip2930: 1,
+  eip1559: 2,
+  blob: 3,
+  setCodeAuthorization: 4,
+} as const
+export type TxType = (typeof TxType)[keyof typeof TxType]
 
 /**
  * Producer-side toggles: which RPCs the oracle calls upstream each cycle.

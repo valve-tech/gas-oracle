@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PublicClient } from 'viem'
 
 import { gasOracleActions } from './viem-actions.js'
+import { PriorityModel, TierName } from './types.js'
 
 const hex = (n: bigint) => '0x' + n.toString(16)
 
@@ -70,7 +71,7 @@ describe('gasOracleActions', () => {
     })
     const actions = gasOracleActions({ chainId: 1 })(client)
 
-    const fast = await actions.getGasTier('fast')
+    const fast = await actions.getGasTier(TierName.fast)
     expect(fast.maxPriorityFeePerGas).toBeGreaterThan(0n)
     expect(fast.gasPrice).toBeGreaterThan(0n)
     actions.stopGasOracle()
@@ -254,7 +255,7 @@ describe('gasOracleActions', () => {
 
     const actions = gasOracleActions({
       chainId: 1,
-      priorityModel: 'eip1559',
+      priorityModel: PriorityModel.eip1559,
       lifecycle: 'lazy',
     })(client)
 

@@ -13,7 +13,12 @@ import {
 } from './math.js'
 import { blockToSample } from './samples.js'
 import type { BlockResult } from './transport.js'
-import type { RawTx, TipSample } from './types.js'
+import {
+  PriorityModel,
+  Trend,
+  type RawTx,
+  type TipSample,
+} from './types.js'
 
 /* -------------------------------------------------------------------------- */
 /*  effectiveTip                                                              */
@@ -104,31 +109,31 @@ describe('sortedTips', () => {
 
 describe('detectTrend', () => {
   it('flags rising when last/first delta is > 10%', () => {
-    expect(detectTrend([100n, 105n, 110n, 115n, 120n])).toBe('rising')
+    expect(detectTrend([100n, 105n, 110n, 115n, 120n])).toBe(Trend.rising)
   })
 
   it('flags falling when last/first delta is < -10%', () => {
-    expect(detectTrend([100n, 95n, 90n, 85n, 80n])).toBe('falling')
+    expect(detectTrend([100n, 95n, 90n, 85n, 80n])).toBe(Trend.falling)
   })
 
   it('returns stable when within ±10%', () => {
-    expect(detectTrend([100n, 101n, 102n, 103n, 105n])).toBe('stable')
+    expect(detectTrend([100n, 101n, 102n, 103n, 105n])).toBe(Trend.stable)
   })
 
   it('returns stable for a single entry', () => {
-    expect(detectTrend([42n])).toBe('stable')
+    expect(detectTrend([42n])).toBe(Trend.stable)
   })
 
   it('returns stable for an empty array', () => {
-    expect(detectTrend([])).toBe('stable')
+    expect(detectTrend([])).toBe(Trend.stable)
   })
 
   it('returns rising when first is 0 and last is positive', () => {
-    expect(detectTrend([0n, 100n])).toBe('rising')
+    expect(detectTrend([0n, 100n])).toBe(Trend.rising)
   })
 
   it('returns stable when first and last are both 0', () => {
-    expect(detectTrend([0n, 0n])).toBe('stable')
+    expect(detectTrend([0n, 0n])).toBe(Trend.stable)
   })
 })
 
@@ -467,7 +472,7 @@ describe('computeTiers', () => {
       ringSamples,
       mempoolSamples,
       baseFee,
-      baseFeeTrend: 'stable',
+      baseFeeTrend: Trend.stable,
       blob: null,
       blockNumber,
       lastPublishedTips: undefined,
@@ -491,17 +496,17 @@ describe('computeTiers', () => {
   })
 
   it('applies the rising buffer (1.25x) to baseFee in maxFeePerGas', () => {
-    const { tiers } = call({ baseFeeTrend: 'rising' })
+    const { tiers } = call({ baseFeeTrend: Trend.rising })
     expect(tiers.slow.maxFeePerGas).toBe(1_250_000_000n + 100n)
   })
 
   it('applies the stable buffer (1.125x) to baseFee in maxFeePerGas', () => {
-    const { tiers } = call({ baseFeeTrend: 'stable' })
+    const { tiers } = call({ baseFeeTrend: Trend.stable })
     expect(tiers.slow.maxFeePerGas).toBe(1_125_000_000n + 100n)
   })
 
   it('applies the falling buffer (1x, no buffer) to baseFee', () => {
-    const { tiers } = call({ baseFeeTrend: 'falling' })
+    const { tiers } = call({ baseFeeTrend: Trend.falling })
     expect(tiers.slow.maxFeePerGas).toBe(1_000_000_000n + 100n)
   })
 
@@ -518,7 +523,7 @@ describe('computeTiers', () => {
   })
 
   it('buffers blobBaseFee using the blob trend', () => {
-    const { tiers } = call({ blob: { blobBaseFee: 1000n, trend: 'rising' } })
+    const { tiers } = call({ blob: { blobBaseFee: 1000n, trend: Trend.rising } })
     // 1000 * 125 / 100 = 1250 — every tier gets the same blob fee
     expect(tiers.slow.maxFeePerBlobGas).toBe(1250n)
     expect(tiers.instant.maxFeePerBlobGas).toBe(1250n)
@@ -582,8 +587,8 @@ describe('computeTiers', () => {
       { tip: 8000n, gas: 100n, txType: 2 },
       { tip: 12000n, gas: 100n, txType: 2 },
     ]
-    const flat = call({ ringSamples: ring, mempoolSamples: [], priorityModel: 'flat' })
-    const eip = call({ ringSamples: ring, mempoolSamples: [], priorityModel: 'eip1559' })
+    const flat = call({ ringSamples: ring, mempoolSamples: [], priorityModel: PriorityModel.flat })
+    const eip = call({ ringSamples: ring, mempoolSamples: [], priorityModel: PriorityModel.eip1559 })
 
     // Slow tier still draws from the full distribution under either model
     expect(flat.tiers.slow.maxPriorityFeePerGas).toBe(eip.tiers.slow.maxPriorityFeePerGas)
@@ -612,7 +617,7 @@ describe('computeTiers', () => {
     const { tiers } = call({
       ringSamples: allLegacy,
       mempoolSamples: [],
-      priorityModel: 'eip1559',
+      priorityModel: PriorityModel.eip1559,
     })
     // Slow still reads the full distribution
     expect(tiers.slow.maxPriorityFeePerGas).toBeGreaterThan(0n)
@@ -656,24 +661,24 @@ describe('computeTiers', () => {
   it('compounds the base-fee buffer across N liveness blocks (rising)', () => {
     // Default rising at N=1 → 1.25×. With N=6, rising → (9/8)^6 × 10/9
     // = 5_314_410 / 2_359_296. baseFee=1e9 → bufferedBase = 1e9 × num/den.
-    const { tiers: oneBlock } = call({ baseFeeTrend: 'rising' })
-    const { tiers: sixBlock } = call({ baseFeeTrend: 'rising', baseFeeLivenessBlocks: 6 })
+    const { tiers: oneBlock } = call({ baseFeeTrend: Trend.rising })
+    const { tiers: sixBlock } = call({ baseFeeTrend: Trend.rising, baseFeeLivenessBlocks: 6 })
     expect(sixBlock.slow.maxFeePerGas).toBeGreaterThan(oneBlock.slow.maxFeePerGas)
     // 1e9 × 5314410 / 2359296 + tip(100) = 2_252_540_688 (bigint, integer-divided)
     expect(sixBlock.slow.maxFeePerGas).toBe(2_252_540_688n)
   })
 
   it('compounds the base-fee buffer across N liveness blocks (stable)', () => {
-    const { tiers } = call({ baseFeeTrend: 'stable', baseFeeLivenessBlocks: 6 })
+    const { tiers } = call({ baseFeeTrend: Trend.stable, baseFeeLivenessBlocks: 6 })
     // stable at N=6: (9/8)^6 = 531441 / 262144
     // baseFee=1e9 × 531441 / 262144 + tip(100) = 2_027_286_629
     expect(tiers.slow.maxFeePerGas).toBe(2_027_286_629n)
   })
 
   it('keeps the base-fee buffer at 1× under falling trend regardless of N', () => {
-    const { tiers: oneBlock } = call({ baseFeeTrend: 'falling' })
+    const { tiers: oneBlock } = call({ baseFeeTrend: Trend.falling })
     const { tiers: sixBlock } = call({
-      baseFeeTrend: 'falling',
+      baseFeeTrend: Trend.falling,
       baseFeeLivenessBlocks: 6,
     })
     expect(sixBlock.slow.maxFeePerGas).toBe(oneBlock.slow.maxFeePerGas)
@@ -681,7 +686,7 @@ describe('computeTiers', () => {
 
   it('compounds the blob-base-fee buffer with the same liveness window', () => {
     const { tiers } = call({
-      blob: { blobBaseFee: 1000n, trend: 'stable' },
+      blob: { blobBaseFee: 1000n, trend: Trend.stable },
       baseFeeLivenessBlocks: 6,
     })
     // 1000 * 531441 / 262144 = 2027 (integer division)

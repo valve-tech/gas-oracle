@@ -34,7 +34,7 @@
 import { custom, type Transport } from 'viem'
 
 import { createGasOracle, type CreateGasOracleOptions, type GasOracle } from './oracle.js'
-import type { GasOracleState, TierName, TierRecommendation } from './types.js'
+import { TierName, TxType, type GasOracleState, type TierRecommendation } from './types.js'
 
 export interface InterceptOptions {
   /**
@@ -84,7 +84,12 @@ const PASSTHROUGH = Symbol('gas-oracle:passthrough')
 
 const toHex = (n: bigint): string => '0x' + n.toString(16)
 
-const TIER_NAMES: TierName[] = ['instant', 'fast', 'standard', 'slow']
+const TIER_NAMES: TierName[] = [
+  TierName.instant,
+  TierName.fast,
+  TierName.standard,
+  TierName.slow,
+]
 
 /**
  * Format a single tier for the `eth_gasFeeEstimate` response, scoped
@@ -95,16 +100,16 @@ const formatTier = (
   tier: TierRecommendation,
   txType: number | undefined,
 ): Record<string, string> => {
-  if (txType === 0 || txType === 1) {
+  if (txType === TxType.legacy || txType === TxType.eip2930) {
     return { gasPrice: toHex(tier.gasPrice) }
   }
-  if (txType === 2 || txType === 4) {
+  if (txType === TxType.eip1559 || txType === TxType.setCodeAuthorization) {
     return {
       maxFeePerGas: toHex(tier.maxFeePerGas),
       maxPriorityFeePerGas: toHex(tier.maxPriorityFeePerGas),
     }
   }
-  if (txType === 3) {
+  if (txType === TxType.blob) {
     return {
       maxFeePerGas: toHex(tier.maxFeePerGas),
       maxPriorityFeePerGas: toHex(tier.maxPriorityFeePerGas),
