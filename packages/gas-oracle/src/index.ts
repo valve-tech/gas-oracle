@@ -84,3 +84,16 @@ export type {
   BlockPositionQuery,
   BlockPositionResult,
 } from './block-position.js'
+
+// Replacement helpers (same-nonce EIP-1559)
+export {
+  minimumReplacementFee,
+  bumpForReplacement,
+  recommendBumpTier,
+  BumpStrategy,
+  ReplacementBumpPercent,
+} from './replacement.js'
+export type {
+  RecommendBumpTierOptions,
+  ReplacementGas,
+} from './replacement.js'
