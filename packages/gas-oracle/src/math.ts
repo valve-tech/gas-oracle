@@ -334,7 +334,7 @@ export const computeTiers = (input: {
     input.priorityFeeDecayCap === undefined
       ? DEFAULT_PRIORITY_FEE_DECAY_CAP
       : input.priorityFeeDecayCap
-  const priorityModel: PriorityModel = input.priorityModel ?? PriorityModel.flat
+  const priorityModel: PriorityModel = input.priorityModel ?? PriorityModel.eip1559
 
   const combined = [...input.ringSamples, ...input.mempoolSamples]
   const targets = TIER_PERCENTILE.map(([, p]) => p)

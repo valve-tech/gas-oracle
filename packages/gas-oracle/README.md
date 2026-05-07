@@ -107,7 +107,9 @@ EIP-2718 type space:
   fast/instant); `slow` still draws from the full distribution. Right
   for chains that honor EIP-1559 ordering (Ethereum, most L2s).
 
-Default `'flat'` (most conservative — never under-counts spam).
+Default `'eip1559'` (most chains honor the EIP-2718 type byte and the
+EIP-1559 fee-market shape). PulseChain (chain 369) is the canonical
+exception — set `priorityModel: 'flat'` explicitly there.
 
 ### `baseFeeLivenessBlocks`
 

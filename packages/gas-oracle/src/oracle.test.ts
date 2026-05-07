@@ -74,6 +74,9 @@ describe('reducePollInputs', () => {
       }),
       chainId: 1,
       prev: null,
+      // Asserting merged-distribution semantics — explicit `flat` so the
+      // legacy txs participate in paying-lane percentiles.
+      priorityModel: PriorityModel.flat,
     })
     expect(next!.tiers.fast.maxPriorityFeePerGas).toBe(100_000_000_000n)
     expect(next!.tiers.instant.maxPriorityFeePerGas).toBe(100_000_000_000n)
@@ -116,7 +119,16 @@ describe('reducePollInputs', () => {
       }).block,
       txPool: null,
     }
-    const next = reducePollInputs({ inputs, chainId: 1, prev: null })
+    const next = reducePollInputs({
+      inputs,
+      chainId: 1,
+      prev: null,
+      // Single legacy tx — under the eip1559 default it would be filtered
+      // out of paying-lane percentiles. The assertion is about whether
+      // block.transactions is read at all (vs feeHistory.reward), so
+      // pin the model to flat.
+      priorityModel: PriorityModel.flat,
+    })
     // Single sample → every tier reads that tip
     expect(next!.tiers.standard.maxPriorityFeePerGas).toBe(100_000_000_000n)
   })
@@ -243,12 +255,20 @@ describe('reducePollInputs', () => {
       }),
       chainId: 1,
       prev: null,
+      // Cap-anchor test uses legacy txs to seed lastPublishedTips —
+      // explicit `flat` so paying-lane tiers pick them up.
+      priorityModel: PriorityModel.flat,
     })!
     expect(prev.lastPublishedTips!.standard).toBe(5_000_000_000n)
 
     const nextInputs = blockOnly()
     nextInputs.block!.number = '0x1235'
-    const next = reducePollInputs({ inputs: nextInputs, chainId: 1, prev })!
+    const next = reducePollInputs({
+      inputs: nextInputs,
+      chainId: 1,
+      prev,
+      priorityModel: PriorityModel.flat,
+    })!
     expect(next.tiers.standard.maxPriorityFeePerGas).toBe(4_375_000_000n)
     expect(next.lastPublishedTips!.standard).toBe(4_375_000_000n)
   })
@@ -264,6 +284,8 @@ describe('reducePollInputs', () => {
       }),
       chainId: 1,
       prev: null,
+      // Same reason as the suppress-whipsaw test above: legacy-only fixture.
+      priorityModel: PriorityModel.flat,
     })!
 
     const nextInputs = blockOnly({
@@ -272,7 +294,12 @@ describe('reducePollInputs', () => {
       ],
     })
     nextInputs.block!.number = '0x1235'
-    const next = reducePollInputs({ inputs: nextInputs, chainId: 1, prev })!
+    const next = reducePollInputs({
+      inputs: nextInputs,
+      chainId: 1,
+      prev,
+      priorityModel: PriorityModel.flat,
+    })!
     expect(next.tiers.standard.maxPriorityFeePerGas).toBe(50_000_000_000n)
   })
 

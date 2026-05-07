@@ -467,6 +467,10 @@ describe('computeTiers', () => {
   ]
   const blockNumber = 100n
 
+  // Default to `flat` so the merged-distribution math tests below can
+  // share the same fixtures (most lack txType). The default-priority-model
+  // test ('defaults priorityModel to eip1559') overrides this back to
+  // undefined to exercise the production default.
   const call = (overrides: Partial<Parameters<typeof computeTiers>[0]> = {}) =>
     computeTiers({
       ringSamples,
@@ -477,6 +481,7 @@ describe('computeTiers', () => {
       blockNumber,
       lastPublishedTips: undefined,
       lastPublishedBlockNumber: undefined,
+      priorityModel: PriorityModel.flat,
       ...overrides,
     })
 
@@ -625,6 +630,40 @@ describe('computeTiers', () => {
     expect(tiers.standard.maxPriorityFeePerGas).toBe(0n)
     expect(tiers.fast.maxPriorityFeePerGas).toBe(0n)
     expect(tiers.instant.maxPriorityFeePerGas).toBe(0n)
+  })
+
+  it('defaults priorityModel to eip1559 when not provided', () => {
+    // Mixed-type distribution: high-tip legacy spam + lower-tip type-2.
+    // Under the eip1559 default, paying-lane tiers must come from
+    // type-2-only samples — so the instant tier reflects the top type-2
+    // tip (12n), NOT the top of the merged distribution (100n).
+    const ring: TipSample[] = [
+      { tip: 100n, gas: 100n, txType: 0 },
+      { tip: 95n, gas: 100n, txType: 0 },
+      { tip: 10n, gas: 100n, txType: 2 },
+      { tip: 12n, gas: 100n, txType: 2 },
+    ]
+    // priorityModel: undefined overrides the helper's flat default
+    // so this test exercises the production default in math.ts.
+    const { tiers } = call({
+      ringSamples: ring,
+      mempoolSamples: [],
+      priorityModel: undefined,
+    })
+
+    // Under eip1559 default, instant reads from {10n, 12n} only.
+    expect(tiers.instant.maxPriorityFeePerGas).toBeLessThanOrEqual(12n)
+    expect(tiers.instant.maxPriorityFeePerGas).toBeGreaterThan(0n)
+    // Cross-check: the same input with explicit 'flat' yields the
+    // higher legacy-spam tip — proves the default truly is eip1559.
+    const flat = call({
+      ringSamples: ring,
+      mempoolSamples: [],
+      priorityModel: PriorityModel.flat,
+    })
+    expect(flat.tiers.instant.maxPriorityFeePerGas).toBeGreaterThan(
+      tiers.instant.maxPriorityFeePerGas,
+    )
   })
 
   it('honors a custom priorityFeeDecayCap (50%/block)', () => {
