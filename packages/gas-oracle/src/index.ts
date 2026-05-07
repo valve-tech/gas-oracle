@@ -97,3 +97,6 @@ export type {
   RecommendBumpTierOptions,
   ReplacementGas,
 } from './replacement.js'
+
+// Tip classification (inverse of tipForBlockPosition)
+export { classifyTip, type ClassifyTipResult } from './classify-tip.js'
