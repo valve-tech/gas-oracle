@@ -49,8 +49,8 @@ import type { TxIdentifier } from './mempool.js'
  * variant, not flattened with `?`-marks.
  */
 export type BlockPositionQuery =
-  | { kind: 'rank'; rank: number }
-  | { kind: 'percentile'; percentile: number }
+  | { kind: 'rank'; rank: bigint }
+  | { kind: 'percentile'; percentile: bigint }
   | { kind: 'gasFromTop'; gas: bigint }
   | { kind: 'aheadOf'; tx: TxIdentifier }
   | { kind: 'behind'; tx: TxIdentifier }
@@ -72,7 +72,7 @@ export interface BlockPositionResult {
    */
   pivot: TipSample | null
   /** Approximate rank of the resolved position, 0-indexed from top. */
-  rank: number
+  rank: bigint
   /** Approximate gas-from-top of the resolved position. */
   gasFromTop: bigint
 }
@@ -98,30 +98,32 @@ const matchesIdentifier = (sample: TipSample, id: TxIdentifier): boolean => {
 /**
  * Walk samples in tip-desc order accumulating gas; return the index
  * (0-based from top) where cumulative gas first crosses `targetGas`.
- * Returns -1 when the target exceeds the sum of all gas (the position
+ * Returns -1n when the target exceeds the sum of all gas (the position
  * is below the whole distribution).
  */
-const indexAtGasOffset = (sorted: TipSample[], targetGas: bigint): number => {
-  if (targetGas <= 0n) return 0
+const indexAtGasOffset = (sorted: TipSample[], targetGas: bigint): bigint => {
+  if (targetGas <= 0n) return 0n
   let cumulative = 0n
-  for (let i = 0; i < sorted.length; i += 1) {
-    cumulative += sorted[i].gas
+  const len = BigInt(sorted.length)
+  for (let i = 0n; i < len; i += 1n) {
+    cumulative += sorted[Number(i)].gas
     if (cumulative > targetGas) return i
   }
-  return -1
+  return -1n
 }
 
-const sumGasUpTo = (sorted: TipSample[], indexExclusive: number): bigint => {
+const sumGasUpTo = (sorted: TipSample[], indexExclusive: bigint): bigint => {
   let g = 0n
-  const upper = Math.min(indexExclusive, sorted.length)
-  for (let i = 0; i < upper; i += 1) g += sorted[i].gas
+  const len = BigInt(sorted.length)
+  const upper = indexExclusive < len ? indexExclusive : len
+  for (let i = 0n; i < upper; i += 1n) g += sorted[Number(i)].gas
   return g
 }
 
 const empty = (): BlockPositionResult => ({
   requiredTip: 0n,
   pivot: null,
-  rank: 0,
+  rank: 0n,
   gasFromTop: 0n,
 })
 
@@ -141,8 +143,9 @@ export const tipForBlockPosition = (
 ): BlockPositionResult => {
   if (samples.length === 0) return empty()
   const sorted = sortByTipDesc(samples)
+  const len = BigInt(sorted.length)
 
-  let pivotIndex: number
+  let pivotIndex: bigint
   let beatPivot: boolean // true = outbid (tip+1), false = undercut (tip-1)
 
   switch (query.kind) {
@@ -152,11 +155,16 @@ export const tipForBlockPosition = (
       break
     }
     case 'percentile': {
-      // 0% = top of block (highest tip); 100% = bottom. Clamp to [0, 100].
-      const pct = Math.min(100, Math.max(0, query.percentile))
-      pivotIndex = Math.floor((sorted.length * pct) / 100)
+      // 0% = top of block (highest tip); 100% = bottom. Clamp to [0n, 100n].
+      const pct =
+        query.percentile < 0n
+          ? 0n
+          : query.percentile > 100n
+            ? 100n
+            : query.percentile
+      pivotIndex = (len * pct) / 100n
       // Edge: percentile=100 lands at length, which is "below everything"
-      if (pivotIndex >= sorted.length) pivotIndex = sorted.length - 1
+      if (pivotIndex >= len) pivotIndex = len - 1n
       beatPivot = true
       break
     }
@@ -167,23 +175,24 @@ export const tipForBlockPosition = (
     }
     case 'aheadOf':
     case 'behind': {
-      pivotIndex = sorted.findIndex((s) => matchesIdentifier(s, query.tx))
+      const found = sorted.findIndex((s) => matchesIdentifier(s, query.tx))
+      pivotIndex = found === -1 ? -1n : BigInt(found)
       beatPivot = query.kind === 'aheadOf'
       break
     }
   }
 
-  if (pivotIndex < 0 || pivotIndex >= sorted.length) {
+  if (pivotIndex < 0n || pivotIndex >= len) {
     // Position is below everyone (or pivot not found) — pay nothing in priority
     return {
       requiredTip: 0n,
       pivot: null,
-      rank: sorted.length,
-      gasFromTop: sumGasUpTo(sorted, sorted.length),
+      rank: len,
+      gasFromTop: sumGasUpTo(sorted, len),
     }
   }
 
-  const pivot = sorted[pivotIndex]
+  const pivot = sorted[Number(pivotIndex)]
   const requiredTip = beatPivot
     ? pivot.tip + 1n
     : pivot.tip > 0n

@@ -38,11 +38,11 @@ if (!state) {
 const samples = state.ring.flatMap((b) => b.tips)
 
 // rank — "tip needed to land in the top 50"
-const rank50 = tipForBlockPosition(samples, { kind: 'rank', rank: 50 })
+const rank50 = tipForBlockPosition(samples, { kind: 'rank', rank: 50n })
 console.log(`top-50    requiredTip=${rank50.requiredTip} wei  rank=${rank50.rank}`)
 
 // percentile — "tip needed to land at p10 (top 10%)"
-const p10 = tipForBlockPosition(samples, { kind: 'percentile', percentile: 10 })
+const p10 = tipForBlockPosition(samples, { kind: 'percentile', percentile: 10n })
 console.log(`p10       requiredTip=${p10.requiredTip} wei  rank=${p10.rank}`)
 
 // gasFromTop — "tip needed to land within 1M gas of the leader"

@@ -35,7 +35,7 @@ import type {
   PriorityModel,
 } from './types.js'
 
-const DEFAULT_POLL_INTERVAL_MS = 10_000
+const DEFAULT_POLL_INTERVAL_MS = 10_000n
 const TREND_WINDOW = 5
 const WAD = 1_000_000_000_000_000_000n
 
@@ -65,12 +65,12 @@ export interface CreateGasOracleOptions {
   /** EVM chain ID. Echoed back in `state.chainId`; not validated. */
   chainId: number
   /**
-   * Polling interval in ms. Default 10_000. Only consulted when the
+   * Polling interval in ms. Default 10_000n. Only consulted when the
    * oracle is constructing its own private `ChainSource` (i.e. when
    * `client` is provided). When a `source` is provided, the source's
    * own poll interval governs.
    */
-  pollIntervalMs?: number
+  pollIntervalMs?: bigint
   /**
    * Optional error sink. Called for each sub-RPC that fails inside a
    * poll cycle. Default behavior is to swallow — the oracle keeps running
@@ -253,8 +253,8 @@ export const reducePollInputs = (input: {
 
   // Mempool — best-effort signal.
   let mempool: MempoolStats = {
-    pendingCount: 0,
-    queuedCount: 0,
+    pendingCount: 0n,
+    queuedCount: 0n,
     pendingGasDemand: 0n,
     blockGasLimit,
   }
@@ -263,8 +263,8 @@ export const reducePollInputs = (input: {
     const pendingTxs = flattenTxPool(txPool.pending)
     const queuedTxs = flattenTxPool(txPool.queued)
     mempool = {
-      pendingCount: pendingTxs.length,
-      queuedCount: queuedTxs.length,
+      pendingCount: BigInt(pendingTxs.length),
+      queuedCount: BigInt(queuedTxs.length),
       pendingGasDemand: pendingTxs.reduce(
         (sum, tx) => sum + (tx.gas ? BigInt(tx.gas) : 0n),
         0n,
@@ -408,7 +408,7 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
     createChainSource({
       // hasClient is true when hasSource is false, by the validation above.
       client: options.client as PublicClient,
-      pollIntervalMs,
+      pollIntervalMs: Number(pollIntervalMs),
       poll: options.poll,
       onError: options.onError,
     })

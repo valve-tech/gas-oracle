@@ -20,62 +20,69 @@ const samples: TipSample[] = [
 
 describe('tipForBlockPosition: empty distribution', () => {
   it('returns the empty result on an empty sample array', () => {
-    const r = tipForBlockPosition([], { kind: 'rank', rank: 0 })
+    const r = tipForBlockPosition([], { kind: 'rank', rank: 0n })
     expect(r.requiredTip).toBe(0n)
     expect(r.pivot).toBeNull()
-    expect(r.rank).toBe(0)
+    expect(r.rank).toBe(0n)
     expect(r.gasFromTop).toBe(0n)
   })
 })
 
 describe("tipForBlockPosition: kind='rank'", () => {
   it('lands at the very top (rank 0)', () => {
-    const r = tipForBlockPosition(samples, { kind: 'rank', rank: 0 })
+    const r = tipForBlockPosition(samples, { kind: 'rank', rank: 0n })
     expect(r.pivot?.hash).toBe('0xtop')
     expect(r.requiredTip).toBe(5001n) // outbid the top tx by 1 wei
-    expect(r.rank).toBe(0)
+    expect(r.rank).toBe(0n)
     expect(r.gasFromTop).toBe(0n)
   })
 
   it('lands at rank 2 (third in block)', () => {
-    const r = tipForBlockPosition(samples, { kind: 'rank', rank: 2 })
+    const r = tipForBlockPosition(samples, { kind: 'rank', rank: 2n })
     expect(r.pivot?.hash).toBe('0xthird')
     expect(r.requiredTip).toBe(3001n)
-    expect(r.rank).toBe(2)
+    expect(r.rank).toBe(2n)
     expect(r.gasFromTop).toBe(300n) // gas from samples[0..1] = 100 + 200
   })
 
   it('returns the below-everyone answer when rank exceeds distribution', () => {
-    const r = tipForBlockPosition(samples, { kind: 'rank', rank: 99 })
+    const r = tipForBlockPosition(samples, { kind: 'rank', rank: 99n })
     expect(r.pivot).toBeNull()
     expect(r.requiredTip).toBe(0n)
-    expect(r.rank).toBe(samples.length)
+    expect(r.rank).toBe(BigInt(samples.length))
     expect(r.gasFromTop).toBe(800n) // sum of all gas
   })
 })
 
 describe("tipForBlockPosition: kind='percentile'", () => {
   it('top 0% = the very top of the block', () => {
-    const r = tipForBlockPosition(samples, { kind: 'percentile', percentile: 0 })
+    const r = tipForBlockPosition(samples, { kind: 'percentile', percentile: 0n })
     expect(r.pivot?.hash).toBe('0xtop')
-    expect(r.rank).toBe(0)
+    expect(r.rank).toBe(0n)
   })
 
   it('40% lands at rank 2 of 5 (5 * 40 / 100 = 2)', () => {
-    const r = tipForBlockPosition(samples, { kind: 'percentile', percentile: 40 })
-    expect(r.rank).toBe(2)
+    const r = tipForBlockPosition(samples, { kind: 'percentile', percentile: 40n })
+    expect(r.rank).toBe(2n)
     expect(r.pivot?.hash).toBe('0xthird')
   })
 
   it('100% clamps to the last index (the bottom of the block)', () => {
-    const r = tipForBlockPosition(samples, { kind: 'percentile', percentile: 100 })
-    expect(r.rank).toBe(4)
+    const r = tipForBlockPosition(samples, { kind: 'percentile', percentile: 100n })
+    expect(r.rank).toBe(4n)
     expect(r.pivot?.hash).toBe('0xfifth')
   })
 
   it('clamps negative percentile to top of block', () => {
-    const r = tipForBlockPosition(samples, { kind: 'percentile', percentile: -10 })
-    expect(r.rank).toBe(0)
+    const r = tipForBlockPosition(samples, { kind: 'percentile', percentile: -10n })
+    expect(r.rank).toBe(0n)
+  })
+
+  it('clamps above-100 percentile to the last index (bottom of block)', () => {
+    // > 100n drives the upper-clamp arm of the bigint percentile ternary.
+    const r = tipForBlockPosition(samples, { kind: 'percentile', percentile: 150n })
+    expect(r.rank).toBe(4n)
+    expect(r.pivot?.hash).toBe('0xfifth')
   })
 })
 
@@ -90,7 +97,7 @@ describe("tipForBlockPosition: kind='gasFromTop'", () => {
     // Cumulatives: 100, 300, 400, 700, 800. Target 200 → first cross at idx=1
     const r = tipForBlockPosition(samples, { kind: 'gasFromTop', gas: 200n })
     expect(r.pivot?.hash).toBe('0xsecond')
-    expect(r.rank).toBe(1)
+    expect(r.rank).toBe(1n)
     expect(r.gasFromTop).toBe(100n)
   })
 
@@ -98,7 +105,7 @@ describe("tipForBlockPosition: kind='gasFromTop'", () => {
     // Cumulatives: 100, 300, 400, 700, 800. Target 400 → first STRICTLY > at idx=3
     const r = tipForBlockPosition(samples, { kind: 'gasFromTop', gas: 400n })
     expect(r.pivot?.hash).toBe('0xfourth')
-    expect(r.rank).toBe(3)
+    expect(r.rank).toBe(3n)
   })
 
   it('gas exceeding total returns the below-everyone result', () => {
@@ -116,7 +123,7 @@ describe("tipForBlockPosition: kind='aheadOf' / 'behind' (relative targeting)", 
     })
     expect(r.pivot?.hash).toBe('0xthird')
     expect(r.requiredTip).toBe(3001n)
-    expect(r.rank).toBe(2)
+    expect(r.rank).toBe(2n)
   })
 
   it("aheadOf by address+nonce returns pivot.tip + 1", () => {

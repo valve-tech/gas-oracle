@@ -38,7 +38,7 @@ const oracle = gasOracleActions({
 const fast = await oracle.getGasTier('fast')
 console.log(`fast tier (direct): maxPriorityFee=${fast.maxPriorityFeePerGas} wei`)
 
-const top10 = await oracle.tipForBlockPosition({ kind: 'rank', rank: 10 })
+const top10 = await oracle.tipForBlockPosition({ kind: 'rank', rank: 10n })
 console.log(`top-10 tip (direct): ${top10.requiredTip} wei`)
 
 oracle.stopGasOracle()

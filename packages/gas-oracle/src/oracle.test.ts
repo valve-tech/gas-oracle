@@ -54,7 +54,7 @@ describe('reducePollInputs', () => {
     expect(next!.blockNumber).toBe(0x1234n)
     expect(next!.baseFee).toBe(baseFeeGwei)
     expect(next!.tiers.slow).toBeDefined()
-    expect(next!.mempool.pendingCount).toBe(0)
+    expect(next!.mempool.pendingCount).toBe(0n)
     expect(next!.blob).toBeNull()
   })
 
@@ -135,8 +135,8 @@ describe('reducePollInputs', () => {
       },
     }
     const next = reducePollInputs({ inputs, chainId: 1, prev: null })
-    expect(next!.mempool.pendingCount).toBe(1)
-    expect(next!.mempool.queuedCount).toBe(1)
+    expect(next!.mempool.pendingCount).toBe(1n)
+    expect(next!.mempool.queuedCount).toBe(1n)
     expect(next!.mempool.pendingGasDemand).toBe(21000n)
   })
 
@@ -398,7 +398,7 @@ describe('createGasOracle', () => {
     const oracle = createGasOracle({
       client,
       chainId: 1,
-      pollIntervalMs: 100,
+      pollIntervalMs: 100n,
       pauseWhenIdle: false,
     })
 
@@ -428,7 +428,7 @@ describe('createGasOracle', () => {
     const oracle = createGasOracle({
       client,
       chainId: 1,
-      pollIntervalMs: 100,
+      pollIntervalMs: 100n,
       pauseWhenIdle: false,
     })
 
@@ -454,7 +454,7 @@ describe('createGasOracle', () => {
       if (method === 'eth_getBlockByNumber') return okBlock()
       return null
     })
-    const oracle = createGasOracle({ client, chainId: 1, pollIntervalMs: 100 })
+    const oracle = createGasOracle({ client, chainId: 1, pollIntervalMs: 100n })
 
     // Drive the first cycle deterministically — `start()` is fire-and-forget
     // so the cycle promise isn't awaitable through it.
@@ -476,7 +476,7 @@ describe('createGasOracle', () => {
       if (method === 'eth_getBlockByNumber') return okBlock()
       return null
     })
-    const oracle = createGasOracle({ client, chainId: 1, pollIntervalMs: 100 })
+    const oracle = createGasOracle({ client, chainId: 1, pollIntervalMs: 100n })
 
     const seen: GasOracleState[] = []
     const unsubscribe = oracle.subscribe((state) => seen.push(state))
@@ -726,7 +726,7 @@ describe('createGasOracle', () => {
       if (method === 'eth_getBlockByNumber') return okBlock()
       return null
     })
-    const oracle = createGasOracle({ client, chainId: 1, pollIntervalMs: 100 })
+    const oracle = createGasOracle({ client, chainId: 1, pollIntervalMs: 100n })
 
     oracle.start()
     await flush()
@@ -754,7 +754,7 @@ describe('createGasOracle', () => {
       if (method === 'eth_getBlockByNumber') return okBlock()
       return null
     })
-    const oracle = createGasOracle({ client, chainId: 1, pollIntervalMs: 100 })
+    const oracle = createGasOracle({ client, chainId: 1, pollIntervalMs: 100n })
     oracle.start()
     await flush()
     // No cycle yet — only the probe ran.
@@ -791,7 +791,7 @@ describe('createGasOracle', () => {
     const oracle = createGasOracle({
       client,
       chainId: 1,
-      pollIntervalMs: 100,
+      pollIntervalMs: 100n,
       blockGatedPolling: false,
     })
     oracle.start()
@@ -862,7 +862,7 @@ describe('createGasOracle', () => {
         chainId: 1,
         pauseWhenHidden: true,
         pauseWhenIdle: false,
-        pollIntervalMs: 100,
+        pollIntervalMs: 100n,
       })
       oracle.start()
       await flush()
@@ -891,7 +891,7 @@ describe('createGasOracle', () => {
         chainId: 1,
         pauseWhenHidden: true,
         pauseWhenIdle: true,
-        pollIntervalMs: 100,
+        pollIntervalMs: 100n,
       })
       oracle.start()
       const unsub = oracle.subscribe(() => {})
@@ -918,7 +918,7 @@ describe('createGasOracle', () => {
         chainId: 1,
         pauseWhenHidden: true,
         pauseWhenIdle: true,
-        pollIntervalMs: 100,
+        pollIntervalMs: 100n,
       })
       oracle.start()
       const unsub = oracle.subscribe(() => {})
@@ -949,7 +949,7 @@ describe('createGasOracle', () => {
         chainId: 1,
         pauseWhenHidden: true,
         pauseWhenIdle: true,
-        pollIntervalMs: 100,
+        pollIntervalMs: 100n,
       })
       oracle.start()
       docRef.hidden = false
@@ -975,7 +975,7 @@ describe('createGasOracle', () => {
         chainId: 1,
         pauseWhenHidden: true,
         pauseWhenIdle: false,
-        pollIntervalMs: 100,
+        pollIntervalMs: 100n,
       })
       oracle.start()
       // First make it hidden then visible
@@ -1007,7 +1007,7 @@ describe('createGasOracle', () => {
     const oracle = createGasOracle({
       client,
       chainId: 1,
-      pollIntervalMs: 100,
+      pollIntervalMs: 100n,
       blockGatedPolling: false,
       staleAfter: 250,
     })
@@ -1069,7 +1069,7 @@ describe('createGasOracle', () => {
     const oracle = createGasOracle({
       client,
       chainId: 1,
-      pollIntervalMs: 100,
+      pollIntervalMs: 100n,
       blockGatedPolling: false,
       staleAfter: 250,
     })
@@ -1102,7 +1102,7 @@ describe('createGasOracle', () => {
     const oracle = createGasOracle({
       client,
       chainId: 1,
-      pollIntervalMs: 100,
+      pollIntervalMs: 100n,
       blockGatedPolling: false,
       staleAfter: 250,
     })
@@ -1137,7 +1137,7 @@ describe('createGasOracle', () => {
     const oracle = createGasOracle({
       client,
       chainId: 1,
-      pollIntervalMs: 100,
+      pollIntervalMs: 100n,
       pauseWhenIdle: false,
       blockGatedPolling: false,
     })
@@ -1169,7 +1169,7 @@ describe('createGasOracle', () => {
     const oracle = createGasOracle({
       client,
       chainId: 1,
-      pollIntervalMs: 100,
+      pollIntervalMs: 100n,
       pauseWhenIdle: false,
     })
     oracle.start()
@@ -1202,7 +1202,7 @@ describe('createGasOracle', () => {
     const oracle = createGasOracle({
       client,
       chainId: 1,
-      pollIntervalMs: 100,
+      pollIntervalMs: 100n,
       pauseWhenIdle: false,
     })
     oracle.start()
@@ -1264,7 +1264,7 @@ describe('createGasOracle', () => {
     const oracle = createGasOracle({
       client,
       chainId: 1,
-      pollIntervalMs: 100,
+      pollIntervalMs: 100n,
       pauseWhenIdle: false,
       blockGatedPolling: false,
       pauseWhenHidden: true,

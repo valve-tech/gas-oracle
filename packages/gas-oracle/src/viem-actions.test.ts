@@ -206,7 +206,7 @@ describe('gasOracleActions', () => {
       return null
     })
     const actions = gasOracleActions({ chainId: 1, lifecycle: 'lazy' })(client)
-    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0 })
+    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0n })
     expect(result.pivot?.hash).toBe('0xtop')
     expect(result.requiredTip).toBe(5_000_000_001n)
     actions.stopGasOracle()
@@ -342,7 +342,7 @@ describe('gasOracleActions', () => {
       lifecycle: 'lazy',
       keepMempoolSnapshot: true,
     })(client)
-    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0 })
+    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0n })
     // Must not throw; pivot may be the highest-tip mempool tx (EIP-1559
     // headroom is min(2gwei priority, 7gwei headroom) = 2gwei) — but
     // the ring tx tip wins (3 gwei priority). The exact pivot is
@@ -395,7 +395,7 @@ describe('gasOracleActions', () => {
       lifecycle: 'lazy',
       keepMempoolSnapshot: true,
     })(client)
-    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0 })
+    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0n })
     // Must not throw — the no-fee mempool tx contributes a 0-tip
     // sample, and the ring's 2-gwei priority tx wins the rank-0 pivot.
     expect(result.pivot?.hash).toBe('0xring')
@@ -465,7 +465,7 @@ describe('gasOracleActions', () => {
       lifecycle: 'lazy',
       keepMempoolSnapshot: true,
     })(client)
-    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0 })
+    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0n })
     expect(result.requiredTip).toBeGreaterThan(0n)
     actions.stopGasOracle()
   })
@@ -527,7 +527,7 @@ describe('gasOracleActions', () => {
       lifecycle: 'lazy',
       keepMempoolSnapshot: true,
     })(client)
-    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0 })
+    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0n })
     // Ring tx tip wins — mempool clamp tx contributed 0n.
     expect(result.pivot?.hash).toBe('0xring')
     actions.stopGasOracle()
@@ -572,7 +572,7 @@ describe('gasOracleActions', () => {
       lifecycle: 'lazy',
       keepMempoolSnapshot: true,
     })(client)
-    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0 })
+    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0n })
     // Doesn't throw; ring sample wins.
     expect(result.pivot?.hash).toBe('0xring')
     actions.stopGasOracle()
@@ -596,7 +596,7 @@ describe('gasOracleActions', () => {
       return null
     })
     const actions = gasOracleActions({ chainId: 1, lifecycle: 'lazy' })(client)
-    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0 })
+    const result = await actions.tipForBlockPosition({ kind: 'rank', rank: 0n })
     expect(result.pivot?.hash).toBe('0xring')
     actions.stopGasOracle()
   })

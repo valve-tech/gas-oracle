@@ -66,8 +66,8 @@ export const TierName = {
 export type TierName = (typeof TierName)[keyof typeof TierName]
 
 export interface MempoolStats {
-  pendingCount: number
-  queuedCount: number
+  pendingCount: bigint
+  queuedCount: bigint
   /** Sum of `tx.gas` across all pending txs — congestion proxy. */
   pendingGasDemand: bigint
   /** Latest block's gas limit, useful for "pending demand vs. block capacity". */
