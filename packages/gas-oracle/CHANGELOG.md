@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.8.0] — 2026-05-06
 
-Synced version bump; no functional changes. The package consumes `@valve-tech/chain-source@0.8.0`'s WS-aware `ChainSource` transparently.
+Consumes `@valve-tech/chain-source@0.8.0`'s WS-aware `ChainSource` transparently. Adds upstream helpers (replacement / classifyTip / inclusion labels), chain presets (PulseChain), const-namespace exports, and a bigint migration of public numeric fields.
+
+### Added
+
+- **Replacement helpers** (`replacement.ts`): `minimumReplacementFee(current, txType)`, `bumpForReplacement(currentGas, targetGas)`, `recommendBumpTier(snapshot, stuckTx, options?)` with three named strategies (`BumpStrategy.cheapestThatLands` / `oneStepFasterThanRecommended` / `instant`). Outpace correction via optional `stuckTx.identifier` reads `snapshot.mempoolSamples` to find the tip needed to outpace the stuck tx in the live distribution, on top of the EIP-1559 +10% protocol floor (verified against geth/reth/PulseChain go-pulse sources).
+- **`classifyTip(snapshot, tipWei)`** (`classify-tip.ts`): inverse of `tipForBlockPosition`. Returns `{ tier, requiredForNextTier, percentile, rank, gasFromTop }`.
+- **Inclusion labels** (`inclusion-labels.ts`): `defaultInclusionLabels` (Record<TierName, string>) and `inclusionLabel(tier, overrides?)` for locale/branded copy without forking.
+- **Chain presets** (`presets.ts`): `chainPresets.pulsechain` (chainId: 369, priorityModel: PriorityModel.flat) plus `presetForChainId(chainId)` runtime lookup.
+- **Const-namespace exports**: `PriorityModel`, `TierName`, `Trend`, `TxType` are now exported as both values (const namespaces) and types. Use `PriorityModel.flat` instead of `'flat'` etc. `TIER_LADDER` (canonical slow→instant ordering) also exported from `types.ts`.
+- **`mempoolSamples: TipSample[]`** on `GasOracleState`. Producer-local — wire publishers should strip before serializing (same convention as `ring`).
+
+### Changed
+
+- **`priorityModel` default flips from `'flat'` to `PriorityModel.eip1559`**. Most chains honor the EIP-2718 type byte and the EIP-1559 fee-market; the default is now correct for the majority case. PulseChain (chain 369) becomes the explicit exception — set `priorityModel: PriorityModel.flat` (or use `...chainPresets.pulsechain`).
+- **BigInt migration of public numeric fields**: `MempoolStats.pendingCount`, `MempoolStats.queuedCount`, `BlockPositionQuery.rank`, `BlockPositionQuery.percentile`, `BlockPositionResult.rank`, `CreateGasOracleOptions.pollIntervalMs` are now `bigint`. Identifier-like fields (`chainId`, EIP-2718 type bytes) stay `number`.
+
+### Migration notes
+
+- Examples that previously omitted `priorityModel` silently get `PriorityModel.eip1559` after upgrade. Verify against your target chain.
+- Math operations on the migrated bigint fields need `n` literals (`0n`, `1n`, etc.) and integer-floor division semantics.
+- `pollIntervalMs: 5000` becomes `pollIntervalMs: 5000n`.
 
 ## [0.7.0] — 2026-05-06
 
