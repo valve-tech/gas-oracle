@@ -103,3 +103,10 @@ export { classifyTip, type ClassifyTipResult } from './classify-tip.js'
 
 // Inclusion labels (UI copy with optional locale overrides)
 export { defaultInclusionLabels, inclusionLabel } from './inclusion-labels.js'
+
+// Chain presets (per-chain config overrides for createGasOracle)
+export {
+  chainPresets,
+  presetForChainId,
+  type ChainPreset,
+} from './presets.js'
