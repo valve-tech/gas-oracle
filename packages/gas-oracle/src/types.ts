@@ -203,6 +203,15 @@ export interface GasOracleState {
    * §7-§9.
    */
   ring: BlockSample[]
+  /**
+   * Live mempool samples used to compute this snapshot's tiers.
+   * Producer-local — wire publishers should strip before serializing
+   * (same convention as `ring`). Consumed by replacement / classification
+   * helpers (e.g., `recommendBumpTier`'s outpace correction) for live-
+   * distribution analysis without re-fetching mempool data. Each poll
+   * replaces this field; no cumulative growth.
+   */
+  mempoolSamples: TipSample[]
   lastPublishedTips?: Record<TierName, bigint>
   lastPublishedBlockNumber?: bigint
 }

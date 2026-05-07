@@ -318,6 +318,56 @@ describe('reducePollInputs', () => {
     expect(next.ring[0].tips).toHaveLength(1)
     expect(next.ring[0].tips[0].tip).toBe(100_000_000_000n)
   })
+
+  it('preserves mempoolSamples on the published state', () => {
+    // Two paying-lane mempool txs at 5 gwei and 8 gwei — the samples
+    // that fed the tier computation must be retained on the resulting
+    // state so downstream replacement/classification helpers can read
+    // the live distribution without re-fetching txpool_content.
+    const inputs: OraclePollInputs = {
+      feeHistory: null,
+      block: blockOnly().block,
+      txPool: {
+        pending: {
+          '0xaaa': {
+            '1': {
+              maxPriorityFeePerGas: hex(5_000_000_000n),
+              maxFeePerGas: hex(baseFeeGwei + 5_000_000_000n),
+              gas: '0x5208',
+              type: '0x2',
+              hash: '0xm1',
+              from: '0xaaa',
+              nonce: '0x1',
+            },
+          },
+          '0xbbb': {
+            '1': {
+              maxPriorityFeePerGas: hex(8_000_000_000n),
+              maxFeePerGas: hex(baseFeeGwei + 8_000_000_000n),
+              gas: '0x5208',
+              type: '0x2',
+              hash: '0xm2',
+              from: '0xbbb',
+              nonce: '0x1',
+            },
+          },
+        },
+        queued: {},
+      },
+    }
+    const next = reducePollInputs({ inputs, chainId: 1, prev: null })!
+    expect(next.mempoolSamples).toHaveLength(2)
+    const tips = next.mempoolSamples.map((s) => s.tip).sort((a, b) => (a < b ? -1 : 1))
+    expect(tips).toEqual([5_000_000_000n, 8_000_000_000n])
+    expect(next.mempoolSamples.every((s) => s.txType === 2)).toBe(true)
+  })
+
+  it('returns an empty mempoolSamples array when txPool is absent', () => {
+    // The "no mempool data" branch — assert the field is still present
+    // and non-undefined so consumers can call array methods safely.
+    const next = reducePollInputs({ inputs: blockOnly(), chainId: 1, prev: null })!
+    expect(next.mempoolSamples).toEqual([])
+  })
 })
 
 /* -------------------------------------------------------------------------- */

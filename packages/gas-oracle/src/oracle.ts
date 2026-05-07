@@ -316,6 +316,7 @@ export const reducePollInputs = (input: {
     blob,
     tiers,
     ring,
+    mempoolSamples,
     lastPublishedTips: publishedTips,
     lastPublishedBlockNumber: blockNumber,
   }
