@@ -65,6 +65,19 @@ export const TierName = {
 } as const
 export type TierName = (typeof TierName)[keyof typeof TierName]
 
+/**
+ * Canonical tier ordering, slow → instant. Used by helpers that walk the
+ * tier ladder (e.g., `classifyTip` finds the highest tier whose floor a
+ * tip clears; `recommendBumpTier` finds the cheapest tier that clears
+ * the protocol floor + outpace floor). Ordering is load-bearing.
+ */
+export const TIER_LADDER: readonly TierName[] = [
+  TierName.slow,
+  TierName.standard,
+  TierName.fast,
+  TierName.instant,
+] as const
+
 export interface MempoolStats {
   pendingCount: bigint
   queuedCount: bigint

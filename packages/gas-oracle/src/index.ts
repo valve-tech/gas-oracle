@@ -62,7 +62,7 @@ export type {
 } from './types.js'
 
 // Const-namespace pairs (value + type share the identifier — see types.ts).
-export { PriorityModel, TierName, Trend, TxType } from './types.js'
+export { PriorityModel, TierName, TIER_LADDER, Trend, TxType } from './types.js'
 
 // Mempool inspection
 export {

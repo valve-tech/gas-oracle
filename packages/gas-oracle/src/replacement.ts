@@ -10,7 +10,7 @@
  * collapses below the strict `old < tx` check.
  */
 
-import { TierName, TxType, type GasOracleState } from './types.js'
+import { TIER_LADDER, TierName, TxType, type GasOracleState } from './types.js'
 import type { TxIdentifier } from './mempool.js'
 import { tipForBlockPosition } from './block-position.js'
 
@@ -92,13 +92,6 @@ export interface RecommendBumpTierOptions {
   /** Default: `BumpStrategy.cheapestThatLands`. */
   strategy?: BumpStrategy
 }
-
-const TIER_LADDER: readonly TierName[] = [
-  TierName.slow,
-  TierName.standard,
-  TierName.fast,
-  TierName.instant,
-]
 
 /**
  * Pick a tier to bump to for a same-nonce EIP-1559 replacement. The

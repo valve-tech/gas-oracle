@@ -7,7 +7,12 @@
  * post-hoc "why is my tx slow" diagnostics.
  */
 
-import { TierName, type GasOracleState, type TipSample } from './types.js'
+import {
+  TIER_LADDER,
+  TierName,
+  type GasOracleState,
+  type TipSample,
+} from './types.js'
 
 export interface ClassifyTipResult {
   /**
@@ -31,13 +36,6 @@ export interface ClassifyTipResult {
   /** Accumulated gas above this tip's position. `0n` when empty. */
   gasFromTop: bigint
 }
-
-const TIER_LADDER: readonly TierName[] = [
-  TierName.slow,
-  TierName.standard,
-  TierName.fast,
-  TierName.instant,
-]
 
 const tierForTip = (
   tiers: GasOracleState['tiers'],
