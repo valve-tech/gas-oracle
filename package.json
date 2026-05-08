@@ -25,7 +25,8 @@
     "test": "yarn workspaces foreach --all --exclude @valve-tech/evm-toolkit run test",
     "test:coverage": "yarn workspaces foreach --all --exclude @valve-tech/evm-toolkit run test:coverage",
     "verify:clean": "rm -rf packages/*/dist packages/*/tsconfig.tsbuildinfo && yarn build && yarn lint && yarn typecheck && yarn typecheck:examples && yarn test",
-    "verify:release-coverage": "node scripts/verify-release-coverage.mjs"
+    "verify:release-coverage": "node scripts/verify-release-coverage.mjs",
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

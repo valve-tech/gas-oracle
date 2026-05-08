@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Pre-push hook: ensure .github/workflows/release.yml has a Publish step
+# for every non-private workspace package under packages/. Catches the
+# v0.9.2 class of bug — a new package was scaffolded but the OIDC
+# release workflow never got a step added for it — before the push
+# leaves the local machine.
+#
+# Bypass with `git push --no-verify` if you genuinely need to push
+# without this check (e.g. transient WIP branch).
+
+exec node scripts/verify-release-coverage.mjs
