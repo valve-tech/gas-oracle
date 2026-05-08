@@ -392,6 +392,111 @@ test('eviction interval is cleared on unmount', async () => {
   })
 })
 
+// ─── rehydrate: pre-hash entries become failed-on-reload ─────────────────
+
+test('rehydrate translates preparing → failed with "lost during reload" note', async () => {
+  const storage = memoryAdapter()
+  await storage.save('reload-prep', [
+    makeTx({ id: 'lost-prep', status: 'preparing' }),
+  ])
+  render(
+    <TxFlightProvider id="reload-prep" storage={storage}>
+      <span />
+    </TxFlightProvider>,
+  )
+  await act(async () => {
+    await Promise.resolve()
+  })
+  const tx = _getStoreForId('reload-prep')!.getState().txs.get('lost-prep')
+  expect(tx?.status).toBe('failed')
+  expect(tx?.notes).toBe('lost during reload')
+})
+
+test('rehydrate translates awaiting-signature → failed with "lost during reload"', async () => {
+  const storage = memoryAdapter()
+  await storage.save('reload-await', [
+    makeTx({ id: 'lost-await', status: 'awaiting-signature' }),
+  ])
+  render(
+    <TxFlightProvider id="reload-await" storage={storage}>
+      <span />
+    </TxFlightProvider>,
+  )
+  await act(async () => {
+    await Promise.resolve()
+  })
+  const tx = _getStoreForId('reload-await')!.getState().txs.get('lost-await')
+  expect(tx?.status).toBe('failed')
+  expect(tx?.notes).toBe('lost during reload')
+})
+
+test('rehydrate keeps pending entries pending when clientFactory is unset', async () => {
+  const storage = memoryAdapter()
+  await storage.save('no-factory', [
+    makeTx({ id: 'still-pending', status: 'pending', hash: '0xabc' }),
+  ])
+  render(
+    <TxFlightProvider id="no-factory" storage={storage}>
+      <span />
+    </TxFlightProvider>,
+  )
+  await act(async () => {
+    await Promise.resolve()
+  })
+  expect(_getStoreForId('no-factory')!.getState().txs.get('still-pending')?.status).toBe('pending')
+})
+
+test('rehydrate calls resumeByHashWatcher when clientFactory returns a client for a pending hash', async () => {
+  const storage = memoryAdapter()
+  await storage.save('with-factory', [
+    makeTx({ id: 'resume-me', status: 'pending', hash: '0xabc' }),
+  ])
+  const stubClient = {
+    transport: { type: 'http' },
+    request: async () => null,
+  } as unknown as Parameters<NonNullable<Parameters<typeof TxFlightProvider>[0]['clientFactory']>>[0] extends number ? unknown : unknown
+  const clientFactory = vi.fn(() => stubClient)
+  render(
+    <TxFlightProvider
+      id="with-factory"
+      storage={storage}
+      // @ts-expect-error — stubClient is intentionally a minimal cast
+      clientFactory={clientFactory}
+    >
+      <span />
+    </TxFlightProvider>,
+  )
+  // Allow rehydrate + dynamic import + subscribeWatcher to settle.
+  await act(async () => {
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+  expect(clientFactory).toHaveBeenCalledWith(1)
+})
+
+test('rehydrate skips watcher when clientFactory returns undefined for the chainId', async () => {
+  const storage = memoryAdapter()
+  await storage.save('factory-empty', [
+    makeTx({ id: 'still-pending', status: 'pending', hash: '0xabc' }),
+  ])
+  const clientFactory = vi.fn(() => undefined)
+  render(
+    <TxFlightProvider
+      id="factory-empty"
+      storage={storage}
+      clientFactory={clientFactory}
+    >
+      <span />
+    </TxFlightProvider>,
+  )
+  await act(async () => {
+    await Promise.resolve()
+  })
+  expect(clientFactory).toHaveBeenCalledWith(1)
+  expect(_getStoreForId('factory-empty')!.getState().txs.get('still-pending')?.status).toBe('pending')
+})
+
 // ─── Strict Mode dev cycle (mount → effect cleanup → effect setup) ────────
 
 test('survives a Strict Mode dev cycle and re-creates the entry', () => {

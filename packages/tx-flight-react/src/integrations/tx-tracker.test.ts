@@ -11,7 +11,9 @@ import type {
 } from '@valve-tech/chain-source'
 
 import { createTxFlightStore } from '../store/store.js'
-import { addByHashImpl } from './tx-tracker.js'
+import type { TrackedTx } from '@valve-tech/wallet-adapter'
+
+import { addByHashImpl, resumeByHashWatcher } from './tx-tracker.js'
 
 // ─── stub ChainSource (mirrors watch-transaction.test.ts) ────────────────
 
@@ -294,6 +296,76 @@ test('store.remove(id) cancels the watcher subscription', async () => {
   // Subsequent block emission should not try to update the (now removed) tx.
   source.emitBlock(makeBlock(100n, '0xb1', [{ hash: HASH, from: '0xs', nonce: '0x1' }]))
   expect(store.getState().txs.has(id)).toBe(false)
+})
+
+// ─── resumeByHashWatcher (rehydrate path) ─────────────────────────────────
+
+const persistedTx = (overrides: Partial<TrackedTx> = {}): TrackedTx => ({
+  id: 'persisted',
+  hash: HASH,
+  chainId: 1,
+  flow: 'send',
+  submittedAt: 1_000_000,
+  submittedTier: 'standard',
+  status: 'pending',
+  ...overrides,
+})
+
+test('resumeByHashWatcher attaches a watcher that advances the existing tx', async () => {
+  const store = makeStore()
+  const tx = persistedTx()
+  store.dispatch.addWithTx(tx, null)
+  const source = makeStubSource()
+  await resumeByHashWatcher(store, tx, makeStubClient(), undefined, {
+    _sourceOverride: source,
+  })
+  source.emitBlock(makeBlock(100n, '0xb1', [{ hash: HASH, from: '0xs', nonce: '0x1' }]))
+  expect(store.getState().txs.get('persisted')?.status).toBe('confirmed')
+})
+
+test('resumeByHashWatcher is a no-op when tx.hash is undefined', async () => {
+  const store = makeStore()
+  const tx = persistedTx({ hash: undefined })
+  store.dispatch.addWithTx(tx, null)
+  await resumeByHashWatcher(store, tx, makeStubClient(), undefined)
+  // Watcher map should not have an entry — no subscribe happened.
+  expect(store.getState().watchers.has('persisted')).toBe(false)
+})
+
+test('resumeByHashWatcher routes subscribeWatcher failures to onError', async () => {
+  const store = makeStore()
+  const tx = persistedTx()
+  store.dispatch.addWithTx(tx, null)
+  // Inject a stub source whose `start` throws — subscribeWatcher
+  // surfaces that as a rejected promise; resumeByHashWatcher
+  // swallows + routes to onError.
+  const blowUp = makeStubSource()
+  blowUp.start = () => { throw new Error('source kaboom') }
+  const onError = vi.fn()
+  await resumeByHashWatcher(store, tx, makeStubClient(), onError, {
+    _sourceOverride: blowUp,
+  })
+  expect(onError).toHaveBeenCalledOnce()
+  expect(onError.mock.calls[0]?.[0]).toBe('rehydrate-watcher')
+  expect(store.getState().watchers.has('persisted')).toBe(false)
+})
+
+test('resumeByHashWatcher tears down its subscription if the tx was removed before subscribe resolved', async () => {
+  const store = makeStore()
+  const tx = persistedTx()
+  store.dispatch.addWithTx(tx, null)
+  const source = makeStubSource()
+  // Kick off the resume; remove the tx synchronously before the
+  // dynamic import settles.
+  const promise = resumeByHashWatcher(store, tx, makeStubClient(), undefined, {
+    _sourceOverride: source,
+  })
+  store.dispatch.remove('persisted')
+  await promise
+  // Once resolved, the tx is still gone (resume detected and bailed).
+  expect(store.getState().txs.has('persisted')).toBe(false)
+  // And the subscribe-then-unsubscribe path didn't accidentally
+  // re-add the entry via overwriteWith addWithTx.
 })
 
 test('without _sourceOverride, the ChainSource is created and stopped on teardown', async () => {

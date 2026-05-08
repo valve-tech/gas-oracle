@@ -34,10 +34,14 @@ import {
   useState,
   type ReactNode,
 } from 'react'
+import type { PublicClient } from 'viem'
 
+import { resumeByHashWatcher } from './integrations/tx-tracker.js'
 import { localStorageAdapter } from './storage/local-storage.js'
 import { createTxFlightStore, type TxFlightStore } from './store/store.js'
 import type { TxFlightStorage } from './types.js'
+
+export type TxFlightClientFactory = (chainId: number) => PublicClient | undefined
 
 const DEFAULT_ID = 'default'
 const DEFAULT_MAX_ITEMS = 50
@@ -91,6 +95,14 @@ export interface TxFlightProviderProps {
   terminalRetentionMs?: number
   /** Surfaced for storage failures, watcher errors. */
   onError?: (method: string, err: unknown) => void
+  /**
+   * Optional. Returns a `PublicClient` for the given `chainId`, or
+   * `undefined` if not configured. Required only if you want
+   * persisted `pending` entries to auto-resume tx-tracker watching
+   * after a reload. Without this, persisted `pending` entries stay
+   * 'pending' until the consumer manually re-issues `addByHash`.
+   */
+  clientFactory?: TxFlightClientFactory
 }
 
 const startEntry = (
@@ -98,6 +110,7 @@ const startEntry = (
   entry: RegistryEntry,
   storage: TxFlightStorage | null,
   onError: ((method: string, err: unknown) => void) | undefined,
+  clientFactory: TxFlightClientFactory | undefined,
 ): void => {
   // Idempotent restart: tear down any prior dispose (the placeholder
   // on a fresh entry, or a real teardown on a re-start). Keeps
@@ -138,7 +151,31 @@ const startEntry = (
     if (loaded === null) return
     for (const tx of loaded) {
       if (store.getState().txs.has(tx.id)) continue
+      // Pre-hash in-flight states cannot resume across a reload — the
+      // wallet interaction is gone. Translate to a terminal failure
+      // so the consumer's UI shows the loss honestly.
+      if (tx.status === 'preparing' || tx.status === 'awaiting-signature') {
+        store.dispatch.addWithTx(
+          { ...tx, status: 'failed', notes: 'lost during reload' },
+          null,
+        )
+        continue
+      }
+      // Default: seed the entry. For 'pending' with a hash + a
+      // configured client, async-attach a tx-tracker watcher so the
+      // entry continues advancing toward terminal.
       store.dispatch.addWithTx(tx, null)
+      if (
+        tx.status === 'pending' &&
+        tx.hash !== undefined &&
+        clientFactory !== undefined
+      ) {
+        const client = clientFactory(tx.chainId)
+        if (client !== undefined) {
+          // resumeByHashWatcher swallows its own failures into onError.
+          void resumeByHashWatcher(store, tx, client, onError)
+        }
+      }
     }
   }).catch((err) => {
     onError?.('storage-load', err)
@@ -156,6 +193,7 @@ export const TxFlightProvider = (props: TxFlightProviderProps): ReactNode => {
   const maxItems = props.maxItems ?? DEFAULT_MAX_ITEMS
   const terminalRetentionMs = props.terminalRetentionMs ?? DEFAULT_TERMINAL_RETENTION_MS
   const onError = props.onError
+  const clientFactory = props.clientFactory
   const storage = props.storage === null
     ? null
     : (props.storage ?? localStorageAdapter())
@@ -199,7 +237,7 @@ export const TxFlightProvider = (props: TxFlightProviderProps): ReactNode => {
     entry.refCount += 1
     if (!entry.started) {
       entry.started = true
-      startEntry(id, entry, storage, onError)
+      startEntry(id, entry, storage, onError, clientFactory)
     }
     // Capture in closure so cleanup uses the entry this commit
     // claimed, not whatever happens to be in the registry later.
@@ -211,7 +249,7 @@ export const TxFlightProvider = (props: TxFlightProviderProps): ReactNode => {
       // Only clear our slot. A test reset may have replaced the entry.
       if (registry.get(id) === captured) registry.delete(id)
     }
-  }, [id, storage, maxItems, terminalRetentionMs, onError])
+  }, [id, storage, maxItems, terminalRetentionMs, onError, clientFactory])
 
   return (
     <TxFlightContext.Provider value={{ id }}>
