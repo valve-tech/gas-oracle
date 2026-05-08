@@ -20,12 +20,17 @@
 import { useSyncExternalStore } from 'react'
 import type { TrackedTx, WriteHookParams } from '@valve-tech/wallet-adapter'
 
+import { addByHashImpl } from './integrations/tx-tracker.js'
 import {
   addWithWalletAdapterImpl,
   type AddWithWalletAdapterResult,
 } from './integrations/wallet-adapter.js'
 import { _getStoreForId, _useTxFlightContext } from './provider.js'
-import type { AddManualInput, AddWithWalletAdapterInput } from './types.js'
+import type {
+  AddByHashInput,
+  AddManualInput,
+  AddWithWalletAdapterInput,
+} from './types.js'
 
 export interface UseTxFlightReturn {
   /** Reactive snapshot — re-renders when state changes. */
@@ -37,6 +42,12 @@ export interface UseTxFlightReturn {
    * original callbacks AND a store dispatch reflecting the new state.
    */
   addWithWalletAdapter: (input: AddWithWalletAdapterInput) => AddWithWalletAdapterResult
+  /**
+   * Add a tx by its hash + chainId. Internally builds a private
+   * ChainSource + TxTracker and watches the hash. Async because
+   * `@valve-tech/tx-tracker` is dynamic-imported (optional peer dep).
+   */
+  addByHash: (input: AddByHashInput) => Promise<string>
   /** Add a fully-formed TrackedTx. Returns the supplied id. */
   addManual: (input: AddManualInput) => string
   /** Remove an entry by id. No-op if not found. */
@@ -64,6 +75,7 @@ export const useTxFlight = (id?: string): UseTxFlightReturn => {
   return {
     txs,
     addWithWalletAdapter: (input) => addWithWalletAdapterImpl(store, input),
+    addByHash: (input) => addByHashImpl(store, input),
     addManual: (input) => {
       store.dispatch.addWithTx(input.tx, null)
       return input.tx.id

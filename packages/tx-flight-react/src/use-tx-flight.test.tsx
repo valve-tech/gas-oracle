@@ -163,6 +163,26 @@ test('re-renders when state changes', () => {
   expect(result.current.txs.length).toBe(1)
 })
 
+// ─── addByHash ────────────────────────────────────────────────────────────
+
+test('addByHash dynamic-imports tx-tracker and seeds a pending TrackedTx', async () => {
+  const { result } = renderHook(() => useTxFlight(), { wrapper: wrapper() })
+  let id = ''
+  await act(async () => {
+    id = await result.current.addByHash({
+      hash: '0xabc',
+      chainId: 1,
+      // Stub PublicClient — addByHash builds an internal source from
+      // it; teardown via remove() doesn't drive any real RPC traffic.
+      client: { transport: { type: 'http' }, request: async () => null } as unknown as Parameters<
+        typeof result.current.addByHash
+      >[0]['client'],
+    })
+  })
+  expect(result.current.get(id)?.status).toBe('pending')
+  expect(result.current.get(id)?.hash).toBe('0xabc')
+})
+
 // ─── addWithWalletAdapter ─────────────────────────────────────────────────
 
 test('addWithWalletAdapter seeds a preparing-status tx and returns wrapped hooks', () => {
