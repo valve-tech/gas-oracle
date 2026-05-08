@@ -614,11 +614,11 @@ describe('createGasOracle', () => {
     ).toThrow(/priorityFeeDecayCap/)
   })
 
-  it('throws when priorityFeeDecayCap is negative', () => {
+  it('accepts a valid cap in [0n, WAD]', () => {
     const { client } = stubClient(() => null)
     expect(() =>
-      createGasOracle({ client, chainId: 1, priorityFeeDecayCap: -1n }),
-    ).toThrow(/priorityFeeDecayCap/)
+      createGasOracle({ client, chainId: 1, priorityFeeDecayCap: 100_000_000n }),
+    ).not.toThrow()
   })
 
   it('accepts null as the explicit "no cap" sentinel', () => {

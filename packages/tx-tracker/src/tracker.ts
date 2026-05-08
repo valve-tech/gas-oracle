@@ -853,15 +853,6 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
         const seen = record.status.lastSeenInBlock
         if (!seen) continue
         if (seen.blockNumber !== div.blockNumber) continue
-        // Belt-and-braces hash check: every record at this height
-        // was included when the canonical block had the previous
-        // hash, so this check is normally redundant — but it
-        // future-proofs against a hypothetical future where a
-        // tracker observes the same height through multiple sources
-        // before we reconcile them. Keeps the vanished-from-block
-        // emit honest.
-        /* c8 ignore next */
-        if (seen.blockHash !== div.previousBlockHash) continue
         record.status.vanishedAt = {
           previousBlockHash: div.previousBlockHash,
           canonicalBlockHash: div.canonicalBlockHash,
@@ -1302,16 +1293,10 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
       return: () => {
         unsub()
         done = true
-        // The unsub call above triggers the synthetic stopped event
-        // through the same `cb` that drains pending waiters, so by
-        // the time we get here the waiters queue is empty under
-        // normal flow. The drain stays as a belt-and-braces guard
-        // for any future code path that might call return() without
-        // the unsub-driven stopped emit.
-        while (waiters.length > 0) {
-          /* c8 ignore next */
-          waiters.shift()!({ value: undefined as unknown as TxEvent, done: true })
-        }
+        // unsub() drives a synthetic 'stopped' event through `cb` above,
+        // which sets done=true and drains every pending waiter via the
+        // inner loop. The waiters queue is always empty by the time we
+        // get here.
         return Promise.resolve({ value: undefined as unknown as TxEvent, done: true })
       },
     }

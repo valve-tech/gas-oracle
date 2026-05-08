@@ -373,11 +373,13 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
     options.priorityFeeDecayCap !== null
   ) {
     const cap = options.priorityFeeDecayCap
-    // Both halves of this `||` have dedicated tests (negative cap,
-    // exceeds WAD). v8 still flags one arm when most calls exit
-    // before this throw.
-    /* c8 ignore next */
-    if (cap < 0n || cap > WAD) {
+    // Split into two ifs: v8 short-circuits the `||` arm coverage.
+    if (cap < 0n) {
+      throw new Error(
+        `priorityFeeDecayCap must be in [0n, ${WAD}] (wad-scale; null = uncapped); got ${cap}`,
+      )
+    }
+    if (cap > WAD) {
       throw new Error(
         `priorityFeeDecayCap must be in [0n, ${WAD}] (wad-scale; null = uncapped); got ${cap}`,
       )
