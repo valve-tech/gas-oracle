@@ -18,14 +18,25 @@
  */
 
 import { useSyncExternalStore } from 'react'
-import type { TrackedTx } from '@valve-tech/wallet-adapter'
+import type { TrackedTx, WriteHookParams } from '@valve-tech/wallet-adapter'
 
+import {
+  addWithWalletAdapterImpl,
+  type AddWithWalletAdapterResult,
+} from './integrations/wallet-adapter.js'
 import { _getStoreForId, _useTxFlightContext } from './provider.js'
-import type { AddManualInput } from './types.js'
+import type { AddManualInput, AddWithWalletAdapterInput } from './types.js'
 
 export interface UseTxFlightReturn {
   /** Reactive snapshot — re-renders when state changes. */
   txs: readonly TrackedTx[]
+  /**
+   * Add a tx the consumer is submitting via @valve-tech/wallet-adapter.
+   * Returns the assigned id and a wrapped `WriteHookParams` to pass to
+   * `sendTransactionWithHooks`. Each phase fans out to the consumer's
+   * original callbacks AND a store dispatch reflecting the new state.
+   */
+  addWithWalletAdapter: (input: AddWithWalletAdapterInput) => AddWithWalletAdapterResult
   /** Add a fully-formed TrackedTx. Returns the supplied id. */
   addManual: (input: AddManualInput) => string
   /** Remove an entry by id. No-op if not found. */
@@ -35,6 +46,8 @@ export interface UseTxFlightReturn {
   /** Imperative read; doesn't subscribe to re-renders. */
   get: (id: string) => TrackedTx | null
 }
+
+export type { WriteHookParams, AddWithWalletAdapterResult }
 
 export const useTxFlight = (id?: string): UseTxFlightReturn => {
   const ambient = _useTxFlightContext()
@@ -50,6 +63,7 @@ export const useTxFlight = (id?: string): UseTxFlightReturn => {
 
   return {
     txs,
+    addWithWalletAdapter: (input) => addWithWalletAdapterImpl(store, input),
     addManual: (input) => {
       store.dispatch.addWithTx(input.tx, null)
       return input.tx.id

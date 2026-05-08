@@ -163,6 +163,27 @@ test('re-renders when state changes', () => {
   expect(result.current.txs.length).toBe(1)
 })
 
+// ─── addWithWalletAdapter ─────────────────────────────────────────────────
+
+test('addWithWalletAdapter seeds a preparing-status tx and returns wrapped hooks', () => {
+  const { result } = renderHook(() => useTxFlight(), { wrapper: wrapper() })
+  let id = ''
+  let hooks: ReturnType<typeof result.current.addWithWalletAdapter>['hooks']
+    | undefined
+  act(() => {
+    const out = result.current.addWithWalletAdapter({
+      hooks: {},
+      flow: 'send',
+      chainId: 1,
+      request: { to: '0x0000000000000000000000000000000000000000' },
+    })
+    id = out.id
+    hooks = out.hooks
+  })
+  expect(result.current.get(id)?.status).toBe('preparing')
+  expect(hooks?.onConfirmed).toBeDefined()
+})
+
 test('multi-instance scoping: two ids are independent', () => {
   const Wrapper = ({ children }: { children: React.ReactNode }) => (
     <TxFlightProvider id="a" storage={null}>
