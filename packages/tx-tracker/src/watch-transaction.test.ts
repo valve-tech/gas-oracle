@@ -340,3 +340,35 @@ test('watchTransaction works with no optional callbacks supplied', () => {
 
   stop()
 })
+
+test('chainId override flows through to emitted events', () => {
+  const source = makeStubSource()
+  const onMined = vi.fn()
+  watchTransaction(makeOptions(source, { hash: HASH, chainId: 137, onMined }))
+
+  source.emitBlock(makeBlock(100n, '0xb1', [{ hash: HASH, from: '0xsender', nonce: '0x1' }]))
+
+  const event = onMined.mock.calls[0][0] as TxEventSeenInBlock
+  expect(event.chainId).toBe(137)
+})
+
+test('chainId falls back to client.chain.id when not explicitly provided', () => {
+  const source = makeStubSource()
+  const onMined = vi.fn()
+  const clientWithChain = {
+    transport: { type: 'http' },
+    chain: { id: 8453 },
+    request: vi.fn(async () => null),
+  } as unknown as PublicClient
+  watchTransaction({
+    client: clientWithChain,
+    hash: HASH,
+    onMined,
+    _sourceOverride: source,
+  } as WatchTransactionInternalOptions)
+
+  source.emitBlock(makeBlock(100n, '0xb1', [{ hash: HASH, from: '0xsender', nonce: '0x1' }]))
+
+  const event = onMined.mock.calls[0][0] as TxEventSeenInBlock
+  expect(event.chainId).toBe(8453)
+})

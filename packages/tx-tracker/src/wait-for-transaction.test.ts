@@ -417,3 +417,34 @@ test('source.start() and source.stop() are called as part of helper lifecycle', 
   expect(startSpy).toHaveBeenCalledOnce()
   expect(stopSpy).toHaveBeenCalledOnce()
 })
+
+test('chainId override flows through to the resolved event', async () => {
+  const source = makeStubSource()
+  const promise = waitForTransaction(makeOptions(source, { hash: HASH, chainId: 137 }))
+
+  source.emitBlock(makeBlock(100n, '0xb1', [{ hash: HASH, from: '0xsender', nonce: '0x1' }]))
+
+  const outcome = await promise
+  expect(outcome.status).toBe('mined')
+  if (outcome.status === 'mined') expect(outcome.event.chainId).toBe(137)
+})
+
+test('chainId falls back to client.chain.id when not explicitly provided', async () => {
+  const source = makeStubSource()
+  const clientWithChain = {
+    transport: { type: 'http' },
+    chain: { id: 8453 },
+    request: vi.fn(async () => null),
+  } as unknown as PublicClient
+  const promise = waitForTransaction({
+    client: clientWithChain,
+    hash: HASH,
+    _sourceOverride: source,
+  } as WaitForTransactionInternalOptions)
+
+  source.emitBlock(makeBlock(100n, '0xb1', [{ hash: HASH, from: '0xsender', nonce: '0x1' }]))
+
+  const outcome = await promise
+  expect(outcome.status).toBe('mined')
+  if (outcome.status === 'mined') expect(outcome.event.chainId).toBe(8453)
+})

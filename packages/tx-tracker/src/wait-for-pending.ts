@@ -39,6 +39,12 @@ export interface WaitForPendingOptions {
    * in any mempool within this many block ticks. Default 12.
    */
   timeoutBlocks?: number
+  /**
+   * Tag emitted events with this chainId. Falls back to
+   * `client.chain?.id`, then `0`. Consumers piping events from multiple
+   * watchers into one stream should set this for unambiguous routing.
+   */
+  chainId?: number
   pollIntervalMs?: number
   onError?: (method: string, err: unknown) => void
 }
@@ -68,7 +74,7 @@ export const waitForPending = (
       })
     const tracker = createTxTracker({
       source,
-      chainId: 0,
+      chainId: options.chainId ?? options.client.chain?.id ?? 0,
       onError: options.onError,
     })
 

@@ -43,6 +43,12 @@ export interface WaitForTransactionOptions {
    * 'failed' when receipt.status === '0x0'. Adds one RPC.
    */
   withReceipts?: boolean
+  /**
+   * Tag emitted events with this chainId. Falls back to
+   * `client.chain?.id`, then `0`. Consumers piping events from multiple
+   * watchers into one stream should set this for unambiguous routing.
+   */
+  chainId?: number
   pollIntervalMs?: number
   onError?: (method: string, err: unknown) => void
 }
@@ -73,7 +79,7 @@ export const waitForTransaction = (
       })
     const tracker = createTxTracker({
       source,
-      chainId: 0,
+      chainId: options.chainId ?? options.client.chain?.id ?? 0,
       onError: options.onError,
     })
 
