@@ -5,6 +5,12 @@ All notable changes to `@valve-tech/gas-oracle` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] — 2026-05-08
+
+Synchronized release — no changes to this package. Bumped in lockstep
+with the rest of the toolkit, alongside the new
+`@valve-tech/tx-flight-react` package.
+
 ## [0.8.1] — 2026-05-07
 
 ### Notes
