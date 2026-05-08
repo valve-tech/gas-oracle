@@ -6,6 +6,23 @@ this file. Per-package details live in each `packages/*/CHANGELOG.md`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.1] — 2026-05-08
+
+Recovery release for v0.9.0 — that tag was pushed but the OIDC
+publish workflow's build step failed before any `npm publish` ran,
+so nothing in the v0.9.0 line ever landed on npm. v0.9.1 is the
+first version of the v0.9.x line that actually publishes.
+
+- **tx-flight-react**: declares `@valve-tech/chain-source`,
+  `@valve-tech/tx-tracker`, and `@valve-tech/wallet-adapter` as
+  `devDependencies: workspace:^` in addition to their existing
+  `peerDependencies` entries. Without this, a clean CI install
+  doesn't link the sibling packages' type declarations and
+  `tsc -p .` fails. Consumer-facing peer-deps are unchanged
+  (still optional).
+- **chain-source**, **gas-oracle**, **tx-tracker**, **viem-errors**,
+  **wallet-adapter**: synced no-op.
+
 ## [0.9.0] — 2026-05-08
 
 Adds a sixth package, **`@valve-tech/tx-flight-react`** — React UI primitives for an in-flight transaction strip. Synced bump across all six `@valve-tech/*` packages.

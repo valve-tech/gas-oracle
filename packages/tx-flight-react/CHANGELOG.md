@@ -6,6 +6,21 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.1] — 2026-05-08
+
+### Fixed
+- Workspace builds in clean CI environments. The sibling packages
+  `@valve-tech/chain-source`, `@valve-tech/tx-tracker`, and
+  `@valve-tech/wallet-adapter` were declared only as
+  `peerDependencies` (with `peerDependenciesMeta.optional: true`)
+  in v0.9.0, so a fresh `yarn install` in CI didn't link their
+  type declarations into this package's `node_modules` and `tsc -p .`
+  failed with `TS2307: Cannot find module '@valve-tech/wallet-adapter'`
+  (and the same for `tx-tracker`). They are now also declared as
+  `devDependencies: workspace:^` so the workspace types resolve
+  during build. No effect on consumers — peer-deps remain optional;
+  this only changes how the package builds itself in the monorepo.
+
 ## [0.9.0] — 2026-05-08
 
 First fully-functional release. Lands the entire React UI primitive

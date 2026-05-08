@@ -742,6 +742,9 @@ __metadata:
     "@testing-library/react": "npm:^16.1.0"
     "@types/react": "npm:^18.3.0"
     "@types/react-dom": "npm:^18.3.0"
+    "@valve-tech/chain-source": "workspace:^"
+    "@valve-tech/tx-tracker": "workspace:^"
+    "@valve-tech/wallet-adapter": "workspace:^"
     fake-indexeddb: "npm:^6.0.0"
     happy-dom: "npm:^15.0.0"
     react: "npm:^18.3.1"
@@ -763,7 +766,7 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@valve-tech/tx-tracker@workspace:packages/tx-tracker":
+"@valve-tech/tx-tracker@workspace:^, @valve-tech/tx-tracker@workspace:packages/tx-tracker":
   version: 0.0.0-use.local
   resolution: "@valve-tech/tx-tracker@workspace:packages/tx-tracker"
   dependencies:
@@ -781,7 +784,7 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@valve-tech/wallet-adapter@workspace:packages/wallet-adapter":
+"@valve-tech/wallet-adapter@workspace:^, @valve-tech/wallet-adapter@workspace:packages/wallet-adapter":
   version: 0.0.0-use.local
   resolution: "@valve-tech/wallet-adapter@workspace:packages/wallet-adapter"
   dependencies:

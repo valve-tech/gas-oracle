@@ -6,11 +6,21 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.1] — 2026-05-08
+
+Synchronized release — no changes to this package. Bumped in lockstep
+with the rest of the toolkit; v0.9.0 didn't actually publish (the
+Release workflow's build step failed on a `tx-flight-react`
+devDependencies oversight before any `npm publish` ran), so this is
+the first version of the v0.9.x line that lands on npm for this
+package.
+
 ## [0.9.0] — 2026-05-08
 
 Synchronized release — no changes to this package. Bumped in lockstep
 with the rest of the toolkit, alongside the new
-`@valve-tech/tx-flight-react` package.
+`@valve-tech/tx-flight-react` package. *Not published — the Release
+workflow's build step failed before publish; superseded by v0.9.1.*
 
 ## [0.8.1] — 2026-05-07
 
