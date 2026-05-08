@@ -1,0 +1,83 @@
+{
+  "name": "@valve-tech/tx-flight-react",
+  "version": "0.9.0",
+  "description": "React UI primitives for rendering an in-flight transaction strip. Provider with multi-instance scoping (id + storage key), three add methods (addWithWalletAdapter for callers using @valve-tech/wallet-adapter, addByHash for raw hash + chain via @valve-tech/tx-tracker, addManual for back-fill), pluggable storage (localStorage default, IndexedDB and memory adapters included), atomic + layout components for headless composition, SSR-safe (the package's React-side hooks are client-only; storage adapters no-op on the server). Part of the valve-tech/evm-toolkit synchronized release line.",
+  "license": "MIT",
+  "homepage": "https://github.com/valve-tech/evm-toolkit/tree/main/packages/tx-flight-react#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/valve-tech/evm-toolkit.git",
+    "directory": "packages/tx-flight-react"
+  },
+  "bugs": {
+    "url": "https://github.com/valve-tech/evm-toolkit/issues"
+  },
+  "keywords": [
+    "ethereum",
+    "evm",
+    "viem",
+    "react",
+    "tx-flight",
+    "tx-status",
+    "transaction-tracker",
+    "wallet-adapter",
+    "ui-primitives"
+  ],
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./storage": {
+      "types": "./dist/storage/index.d.ts",
+      "import": "./dist/storage/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p .",
+    "typecheck": "tsc -p . --noEmit",
+    "lint": "eslint src",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "prepare": "yarn build"
+  },
+  "peerDependencies": {
+    "@valve-tech/chain-source": "workspace:^",
+    "@valve-tech/tx-tracker": "workspace:^",
+    "@valve-tech/wallet-adapter": "workspace:^",
+    "react": "^18.2.0 || ^19.0.0",
+    "react-dom": "^18.2.0 || ^19.0.0",
+    "viem": "^2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@valve-tech/chain-source": {
+      "optional": true
+    },
+    "@valve-tech/tx-tracker": {
+      "optional": true
+    },
+    "@valve-tech/wallet-adapter": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "fake-indexeddb": "^6.0.0",
+    "happy-dom": "^15.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

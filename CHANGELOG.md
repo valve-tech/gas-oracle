@@ -6,6 +6,17 @@ this file. Per-package details live in each `packages/*/CHANGELOG.md`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] — 2026-05-08
+
+Adds a sixth package, **`@valve-tech/tx-flight-react`** — React UI primitives for an in-flight transaction strip. Synced bump across all six `@valve-tech/*` packages.
+
+- **tx-flight-react** (NEW): `<TxFlightProvider>` + `useTxFlight` hook + headless layout/atomic components (`<TxFlightList>`, `<TxFlightItem>`, `<TxFlightStatusIcon>`, `<TxFlightHashLink>`, `<TxFlightAge>`, `<TxFlightActions>`). Three add shapes — `addWithWalletAdapter` (sync, types-only wallet-adapter import; wraps `WriteHookParams` so each phase fans to user callbacks AND store dispatch), `addByHash` (async; dynamic-imports tx-tracker + chain-source), `addManual` (sync back-fill). Pluggable storage adapters (`localStorageAdapter` default, `indexedDBAdapter`, `memoryAdapter`) at the `/storage` sub-export. Persistence with bigint-safe JSON; rehydrate revives pending watchers via an optional `clientFactory` prop. Multi-instance scoping by `id`. SSR / RSC safe (Provider is `'use client'`; pure-renderer components are RSC-compatible). Spec: `docs/superpowers/specs/2026-05-07-tx-flight-react-design.md`.
+- **chain-source**, **gas-oracle**, **tx-tracker**, **viem-errors**, **wallet-adapter**: synced no-op.
+
+The `@valve-tech/tx-flight-react@0.0.1` name-claim publish was made manually before this release so the npm trusted-publisher record could be wired against the existing package; the 0.9.0 release publishes via the OIDC workflow alongside the synced sibling packages.
+
+All six packages remain at 100/100/100/100 stmts/branches/funcs/lines.
+
 ## [0.8.1] — 2026-05-07
 
 Code-quality cleanup of v0.8.0 review leftovers. Synced bump across all five `@valve-tech/*` packages.
