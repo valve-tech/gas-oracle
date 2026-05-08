@@ -1,0 +1,4 @@
+# Auto-generated from the upstream OpenAPI spec by scripts/codegen.mjs.
+# Run `yarn codegen` (or `yarn install`, which triggers `prepare`) to
+# materialize this file before building.
+src/generated.ts

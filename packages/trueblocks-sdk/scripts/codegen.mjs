@@ -8,7 +8,7 @@
 // newer commit, re-run `yarn codegen`, and review the diff in
 // src/generated.ts before committing.
 
-import { writeFileSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import openapiTS, { astToString } from 'openapi-typescript'
@@ -18,6 +18,16 @@ const SPEC_URL = `https://raw.githubusercontent.com/TrueBlocks/trueblocks-core/$
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const OUT = resolve(HERE, '..', 'src', 'generated.ts')
+
+// `--if-missing` is the prebuild form: skip the network roundtrip if
+// `src/generated.ts` already exists (i.e. a developer ran `yarn codegen`
+// recently or `prepare` did the work on a previous `yarn install`).
+// `yarn codegen` (no flag) always re-fetches.
+if (process.argv.includes('--if-missing') && existsSync(OUT)) {
+  console.log(`generated.ts already exists; skipping codegen.`)
+  console.log(`Run \`yarn codegen\` to force a refresh.`)
+  process.exit(0)
+}
 
 const HEADER = `/**
  * AUTO-GENERATED — DO NOT EDIT.

@@ -3,14 +3,28 @@ import type { paths } from './generated.js'
 
 /**
  * Extracts the query-parameter type for a given chifra endpoint
- * from the generated OpenAPI types. Resolves to the inner shape if
- * the endpoint defines query params, or `undefined` if not.
+ * from the generated OpenAPI types. The `query?: infer Q` form
+ * matches both required (`query: { … }`) and optional (`query?: { … }`)
+ * spec definitions, returning the inner object type either way.
  */
 export type Query<P extends keyof paths> = paths[P]['get'] extends {
   parameters: { query?: infer Q }
 }
   ? Q
   : never
+
+/**
+ * True at type level when a chifra endpoint's `query` parameter is
+ * required (the OpenAPI spec did not mark it optional). Used to
+ * narrow `VerbFn<P>` to a required-arg signature for endpoints like
+ * `/blocks` (which mandates `blocks: string[]`) while keeping a
+ * no-arg-allowed signature for endpoints like `/status`.
+ */
+export type IsRequiredQuery<P extends keyof paths> = paths[P]['get'] extends {
+  parameters: { query: unknown }
+}
+  ? true
+  : false
 
 /**
  * Extracts the JSON response body type for a given chifra endpoint.
@@ -22,23 +36,34 @@ export type Response<P extends keyof paths> = paths[P]['get'] extends {
   : never
 
 /**
- * Builds a typed verb-method for a chifra endpoint. The returned
- * function takes the endpoint's query params (typed from the spec)
- * and returns a Promise of the typed JSON response body.
- *
- * Optional vs required query is collapsed at the function boundary:
- * the signature takes `query?` for ergonomics, with required fields
- * still surfaced inside the query object's type. Calling with a
- * missing required field will reach chifra and return a typed
- * `TrueblocksError` with the daemon's 4xx status.
+ * The callable signature of a verb. Distinguishes endpoints whose
+ * `query` is required (call MUST pass an arg, e.g. `client.blocks({ blocks: [...] })`)
+ * from those whose `query` is optional (call MAY omit the arg, e.g.
+ * `client.status()`). Required fields inside the query object remain
+ * required regardless.
  */
-export function makeVerb<P extends keyof paths>(request: RequestFn, path: P) {
-  return async (query?: Query<P>): Promise<Response<P>> => {
+export type VerbFn<P extends keyof paths> =
+  IsRequiredQuery<P> extends true
+    ? (query: Query<P>) => Promise<Response<P>>
+    : (query?: Query<P>) => Promise<Response<P>>
+
+/**
+ * Builds a typed verb-method for a chifra endpoint. The runtime is
+ * uniform — `query` is always passed through to `request` whether
+ * provided or undefined — but the public type narrows to required
+ * vs optional based on the spec.
+ */
+export function makeVerb<P extends keyof paths>(
+  request: RequestFn,
+  path: P,
+): VerbFn<P> {
+  const fn = async (query?: unknown): Promise<Response<P>> => {
     return request<Response<P>>(
       path,
       query as Record<string, unknown> | undefined,
     )
   }
+  return fn as VerbFn<P>
 }
 
 /**

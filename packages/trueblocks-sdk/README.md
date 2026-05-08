@@ -116,7 +116,12 @@ options via IntelliSense.
 
 ## License
 
-MIT (this package). Note that the upstream `chifra` daemon and its
-OpenAPI spec are GPL-3.0-or-later; this client consumes chifra's
-public network API and is not a derivative work of the Go SDK
-(reimplements the API surface from the spec only).
+GPL-3.0-or-later, matching the upstream `trueblocks-core` project.
+You are free to use this package — including in commercial software
+— modify it, and redistribute it. If you redistribute, your
+modifications must also be GPL-3.0-or-later (copyleft). See the
+`LICENSE` file or https://www.gnu.org/licenses/gpl-3.0 for full
+terms.
+
+Note: this is the only GPL-licensed package under the `@valve-tech`
+scope. The other six toolkit packages are MIT.
