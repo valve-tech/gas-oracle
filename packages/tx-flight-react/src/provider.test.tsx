@@ -378,6 +378,43 @@ test('evicts on the periodic interval', async () => {
   expect(store.getState().txs.size).toBe(0)
 })
 
+test('maxItems enforcement: list trims to the cap on the eviction tick', async () => {
+  vi.useFakeTimers()
+  const startTime = 1_000_000
+  vi.setSystemTime(startTime)
+
+  render(
+    <TxFlightProvider id="cap" storage={null} maxItems={5}>
+      <span />
+    </TxFlightProvider>,
+  )
+  const store = _getStoreForId('cap')!
+  // 7 confirmed (terminal) entries — 5 maxItems means 2 should evict.
+  // All confirmed at the same instant so the comparator falls back to
+  // submittedAt; spread submittedAt so order is deterministic.
+  act(() => {
+    for (let i = 0; i < 7; i += 1) {
+      store.dispatch.addWithTx(
+        {
+          id: `t-${i}`,
+          chainId: 1,
+          flow: 'send',
+          submittedAt: startTime + i,
+          submittedTier: 'standard',
+          status: 'confirmed',
+          confirmedAt: startTime,
+        },
+        null,
+      )
+    }
+  })
+  expect(store.getState().txs.size).toBe(7)
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5_000)
+  })
+  expect(store.getState().txs.size).toBe(5)
+})
+
 test('eviction interval is cleared on unmount', async () => {
   vi.useFakeTimers()
   const { unmount } = render(
