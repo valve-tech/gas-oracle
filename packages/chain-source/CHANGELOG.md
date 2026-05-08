@@ -6,6 +6,10 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] — 2026-05-07
+
+Synchronized release — no changes to this package. Bumped in lockstep with the rest of the toolkit.
+
 ## [0.8.0] — 2026-05-06
 
 ### Added

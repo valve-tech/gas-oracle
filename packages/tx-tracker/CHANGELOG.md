@@ -6,6 +6,20 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] — 2026-05-07
+
+### Added
+- `chainId` option on `watchTransaction` / `waitForTransaction` / `waitForPending`. Echoes through to `event.chainId` so consumers fanning multiple watchers into a single multi-chain stream can disambiguate. Falls back to `client.chain?.id`, then `0`.
+
+### Changed
+- `replaceTransaction` no longer passes `chain: null`, which silently disabled viem's `assertChainId` network-mismatch check. Now defers to `walletClient.chain` (passing `null` only when the wallet has no chain set, the only case viem requires it). `original.chainId` is threaded through as the top-level `chainId` field — the field is now load-bearing for EIP-155 signing and chain assertion. If a caller's wallet client and `original.chainId` disagree, viem throws.
+
+### Removed
+- Dead `_eventSource` parameters from internal `runBulkOnBlock` / `runBulkOnMempool`. No effect on public API.
+
+### Notes
+- Code-quality cleanup: removed three unreachable defensive guards from `tracker.ts` and `reorg.ts` that were marked with `c8 ignore` annotations. One pre-existing annotation remains (`tracker.ts:1083` invariant throw, kept for TS return-type narrowing). 100/100/100/100 coverage holds.
+
 ## [0.8.0] — 2026-05-06
 
 ### Added

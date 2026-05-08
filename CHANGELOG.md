@@ -6,6 +6,16 @@ this file. Per-package details live in each `packages/*/CHANGELOG.md`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] — 2026-05-07
+
+Code-quality cleanup of v0.8.0 review leftovers. Synced bump across all five `@valve-tech/*` packages.
+
+- **tx-tracker**: `chainId` option on the three one-shot helpers (`watchTransaction`, `waitForTransaction`, `waitForPending`) — falls back to `client.chain?.id` so the previous `chainId: 0` placeholder gets auto-corrected for most callers without an API change. `replaceTransaction` no longer disables viem's network-mismatch check (`chain: null` → `walletClient.chain ?? null`); `original.chainId` is now load-bearing for EIP-155 signing and chain assertion. Removed dead `_eventSource` parameters from internal bulk runners.
+- **gas-oracle**, **viem-errors**: small internal refactors that eliminated `c8 ignore` annotations from earlier releases. No public-API changes.
+- **chain-source**, **wallet-adapter**: synced no-op.
+
+All five packages remain at 100/100/100/100 stmts/branches/funcs/lines.
+
 ## [0.8.0] — 2026-05-06
 
 Synced bump across all five `@valve-tech/*` packages.
