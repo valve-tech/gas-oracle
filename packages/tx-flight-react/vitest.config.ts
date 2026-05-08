@@ -1,6 +1,9 @@
 export default {
   test: {
-    globals: false,
+    // `globals: true` lets `@testing-library/react` install its
+    // `afterEach(cleanup)` automatically. Without it, rendered DOM
+    // leaks across tests in the same file.
+    globals: true,
     environment: 'happy-dom',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     coverage: {

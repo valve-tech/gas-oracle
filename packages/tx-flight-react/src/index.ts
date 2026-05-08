@@ -26,3 +26,27 @@ export {
 } from './provider.js'
 
 export { useTxFlight, type UseTxFlightReturn } from './use-tx-flight.js'
+
+// ─── Components ────────────────────────────────────────────────────────────
+
+export {
+  TxFlightStatusIcon,
+  type TxFlightStatusIconProps,
+} from './components/status-icon.js'
+export {
+  TxFlightHashLink,
+  type TxFlightHashLinkProps,
+  type HashTruncate,
+} from './components/hash-link.js'
+export { TxFlightAge, type TxFlightAgeProps } from './components/age.js'
+export {
+  TxFlightActions,
+  type TxFlightActionsProps,
+  type TxFlightActionsShow,
+} from './components/actions.js'
+export {
+  TxFlightItem,
+  type TxFlightItemProps,
+  type TxFlightItemRenderParts,
+} from './components/item.js'
+export { TxFlightList, type TxFlightListProps } from './components/list.js'
