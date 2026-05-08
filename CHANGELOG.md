@@ -6,12 +6,34 @@ this file. Per-package details live in each `packages/*/CHANGELOG.md`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.2] — 2026-05-08
+
+Second recovery release for v0.9.0. The v0.9.1 attempt added the
+sibling-package `devDependencies` to `tx-flight-react` but didn't
+fix the workspace **build ordering**: the root `build` script used
+`yarn workspaces foreach --topological`, which only follows
+`dependencies` entries — not `devDependencies` — so `tx-flight-react`
+still ran before `wallet-adapter` / `tx-tracker` were emitted, and
+the Build step failed identically. Switched to `--topological-dev`
+in the root `build` script. v0.9.2 is the first version of the
+v0.9.x line to actually reach npm.
+
+- **root**: `package.json#scripts.build` now uses
+  `--topological-dev`, so workspace `devDependencies` participate
+  in build ordering. Pure CI-orchestration change; no published
+  package shape changed.
+- **chain-source**, **gas-oracle**, **tx-tracker**, **viem-errors**,
+  **wallet-adapter**, **tx-flight-react**: synced no-op (version
+  bump only — package contents identical to v0.9.1's intended
+  publish, which never reached npm).
+
 ## [0.9.1] — 2026-05-08
 
 Recovery release for v0.9.0 — that tag was pushed but the OIDC
 publish workflow's build step failed before any `npm publish` ran,
-so nothing in the v0.9.0 line ever landed on npm. v0.9.1 is the
-first version of the v0.9.x line that actually publishes.
+so nothing in the v0.9.0 line ever landed on npm. *Also did not
+publish — same Build-step failure due to `--topological` ignoring
+the new `devDependencies`. Superseded by v0.9.2.*
 
 - **tx-flight-react**: declares `@valve-tech/chain-source`,
   `@valve-tech/tx-tracker`, and `@valve-tech/wallet-adapter` as

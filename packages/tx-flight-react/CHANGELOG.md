@@ -6,7 +6,23 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.2] — 2026-05-08
+
+Synchronized release — no changes to this package itself.
+Companion fix to v0.9.1: the root `build` script now uses
+`yarn workspaces foreach --topological-dev` so the sibling-package
+`devDependencies` added in v0.9.1 actually drive build ordering
+in CI. v0.9.2 is the first version of the v0.9.x line to reach
+npm for this package.
+
 ## [0.9.1] — 2026-05-08
+
+*Not published — the Release workflow's Build step failed for the
+same reason as v0.9.0. Adding the workspace siblings to
+`devDependencies` did declare the dep relationship, but the root
+`build` script's `--topological` flag only follows `dependencies`,
+so the build ordering didn't actually change. v0.9.2 fixes this by
+switching to `--topological-dev`.*
 
 ### Fixed
 - Workspace builds in clean CI environments. The sibling packages

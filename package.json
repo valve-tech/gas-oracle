@@ -18,7 +18,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "yarn workspaces foreach --all --topological --exclude @valve-tech/evm-toolkit run build",
+    "build": "yarn workspaces foreach --all --topological-dev --exclude @valve-tech/evm-toolkit run build",
     "typecheck": "yarn workspaces foreach --all --exclude @valve-tech/evm-toolkit run typecheck",
     "typecheck:examples": "yarn workspace @valve-tech/gas-oracle run typecheck:examples",
     "lint": "yarn workspaces foreach --all --exclude @valve-tech/evm-toolkit run lint",

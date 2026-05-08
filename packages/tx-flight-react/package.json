@@ -1,6 +1,6 @@
 {
   "name": "@valve-tech/tx-flight-react",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "React UI primitives for rendering an in-flight transaction strip. Provider with multi-instance scoping (id + storage key), three add methods (addWithWalletAdapter for callers using @valve-tech/wallet-adapter, addByHash for raw hash + chain via @valve-tech/tx-tracker, addManual for back-fill), pluggable storage (localStorage default, IndexedDB and memory adapters included), atomic + layout components for headless composition, SSR-safe (the package's React-side hooks are client-only; storage adapters no-op on the server). Part of the valve-tech/evm-toolkit synchronized release line.",
   "license": "MIT",
   "homepage": "https://github.com/valve-tech/evm-toolkit/tree/main/packages/tx-flight-react#readme",

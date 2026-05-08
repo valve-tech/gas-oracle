@@ -6,14 +6,19 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.2] — 2026-05-08
+
+Synchronized release — no changes to this package. Companion fix
+to v0.9.1: the root `build` script now uses `--topological-dev`
+so workspace `devDependencies` (added to `tx-flight-react` in
+v0.9.1) actually drive build ordering. v0.9.2 is the first version
+of the v0.9.x line to land on npm for this package.
+
 ## [0.9.1] — 2026-05-08
 
-Synchronized release — no changes to this package. Bumped in lockstep
-with the rest of the toolkit; v0.9.0 didn't actually publish (the
-Release workflow's build step failed on a `tx-flight-react`
-devDependencies oversight before any `npm publish` ran), so this is
-the first version of the v0.9.x line that lands on npm for this
-package.
+*Not published — the Release workflow's Build step failed for the
+same reason as v0.9.0. Superseded by v0.9.2.* Synchronized release;
+no changes to this package itself.
 
 ## [0.9.0] — 2026-05-08
 
