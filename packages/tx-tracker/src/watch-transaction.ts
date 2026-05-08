@@ -29,6 +29,12 @@ export interface WatchTransactionOptions {
   confirmations?: number
   /** Blocks of "no observation" before onDropped fires. Default 12. */
   staleAfterBlocks?: number
+  /**
+   * Tag emitted events with this chainId. Falls back to
+   * `client.chain?.id`, then `0`. Consumers piping events from multiple
+   * watchers into one stream should set this for unambiguous routing.
+   */
+  chainId?: number
   /** Pass through to the internal ChainSource. */
   pollIntervalMs?: number
   onMined?: (event: TxEventSeenInBlock) => void
@@ -80,7 +86,7 @@ export const watchTransaction = (
   })
   const tracker = createTxTracker({
     source,
-    chainId: 0, // chainId echoed in events but not load-bearing for one-shot
+    chainId: options.chainId ?? options.client.chain?.id ?? 0,
     onError: options.onError,
   })
 

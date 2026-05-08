@@ -101,7 +101,26 @@ test('replaceTransaction — passes account from walletClient', async () => {
   expect(req.account).toBe(account)
 })
 
-test('replaceTransaction — chain is null in the request', async () => {
+test('replaceTransaction — chain defaults to walletClient.chain when set', async () => {
+  const sendTransaction = vi.fn(async (_req: unknown) => '0xhash' as const)
+  const chain = { id: 1, name: 'mainnet' }
+  const walletClient = {
+    account: { address: '0xa' },
+    chain,
+    sendTransaction,
+  } as never
+
+  await replaceTransaction({
+    original: { to: '0xr', nonce: 3 },
+    walletClient,
+    newGas: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
+  })
+
+  const req = sendTransaction.mock.calls[0]?.[0] as { chain: unknown }
+  expect(req.chain).toBe(chain)
+})
+
+test('replaceTransaction — chain is null when walletClient.chain is unset', async () => {
   const sendTransaction = vi.fn(async (_req: unknown) => '0xhash' as const)
   const walletClient = {
     account: { address: '0xa' },
@@ -116,4 +135,21 @@ test('replaceTransaction — chain is null in the request', async () => {
 
   const req = sendTransaction.mock.calls[0]?.[0] as { chain: unknown }
   expect(req.chain).toBeNull()
+})
+
+test('replaceTransaction — threads original.chainId into the request', async () => {
+  const sendTransaction = vi.fn(async (_req: unknown) => '0xhash' as const)
+  const walletClient = {
+    account: { address: '0xa' },
+    sendTransaction,
+  } as never
+
+  await replaceTransaction({
+    original: { to: '0xr', nonce: 3, chainId: 137 },
+    walletClient,
+    newGas: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
+  })
+
+  const req = sendTransaction.mock.calls[0]?.[0] as { chainId: unknown }
+  expect(req.chainId).toBe(137)
 })

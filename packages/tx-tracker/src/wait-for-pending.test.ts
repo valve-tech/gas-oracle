@@ -327,6 +327,41 @@ test('resolves with distinct hash — does not fire for unrelated hashes', async
   expect(event.hash).toBe(HASH)
 })
 
+test('chainId override flows through to the resolved event', async () => {
+  const source = makeStubSource()
+  const promise = waitForPending(makeOptions(source, { hash: HASH, chainId: 137 }))
+
+  source.emitMempool({
+    pending: { '0xsender': { '1': { hash: HASH, from: '0xsender', nonce: '0x1' } } },
+    queued: {},
+  })
+
+  const event = await promise
+  expect(event.chainId).toBe(137)
+})
+
+test('chainId falls back to client.chain.id when not explicitly provided', async () => {
+  const source = makeStubSource()
+  const clientWithChain = {
+    transport: { type: 'http' },
+    chain: { id: 8453 },
+    request: vi.fn(async () => null),
+  } as unknown as PublicClient
+  const promise = waitForPending({
+    client: clientWithChain,
+    hash: HASH,
+    _sourceOverride: source,
+  } as WaitForPendingInternalOptions)
+
+  source.emitMempool({
+    pending: { '0xsender': { '1': { hash: HASH, from: '0xsender', nonce: '0x1' } } },
+    queued: {},
+  })
+
+  const event = await promise
+  expect(event.chainId).toBe(8453)
+})
+
 // Type-level usage reference (not executed as a test assertion)
 void (null as unknown as WaitForPendingOptions)
 void (null as unknown as WaitForPendingInternalOptions)

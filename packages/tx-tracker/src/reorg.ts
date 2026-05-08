@@ -79,13 +79,10 @@ export const appendBlock = (
   const next = ring.filter((b) => b.number !== block.number)
   next.push(block)
   // Sort ascending by block number. The ring is small (~depth + a
-  // few) so the cost is negligible. The same-number case is
-  // unreachable here — `filter` above strips any prior entry at
-  // `block.number` before we push, so the comparator never sees
-  // equal keys; we return -1 in that arm only to satisfy bigint
-  // sort's contract.
-  /* c8 ignore next */
-  next.sort((a, b) => (a.number < b.number ? -1 : 1))
+  // few) so the cost is negligible. Block numbers are well within
+  // MAX_SAFE_INTEGER, so casting the bigint difference to Number is
+  // safe and gives a branchless comparator.
+  next.sort((a, b) => Number(a.number - b.number))
   if (next.length > capacityBlocks) {
     next.splice(0, next.length - capacityBlocks)
   }
@@ -158,11 +155,9 @@ export const detectDivergences = (input: {
 
   // Sort ascending by number so the tracker emits vanished events
   // in chain order — easier on consumers piping to a single sink.
-  // Divergences are unique by `blockNumber` (one entry per ring
-  // height), so the comparator never sees equal keys; we return -1
-  // in that arm only to satisfy the sort contract.
-  /* c8 ignore next */
-  divergences.sort((a, b) => (a.blockNumber < b.blockNumber ? -1 : 1))
+  // Block numbers are well within MAX_SAFE_INTEGER, so casting the
+  // bigint difference to Number gives a branchless comparator.
+  divergences.sort((a, b) => Number(a.blockNumber - b.blockNumber))
   return divergences
 }
 

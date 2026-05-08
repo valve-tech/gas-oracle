@@ -44,12 +44,8 @@ const REJECTION_MESSAGE_PATTERN = /user rejected|user denied|rejected the reques
  */
 export function isUserRejectionError(error: unknown): boolean {
   for (const link of walkErrorCause(error)) {
-    // walkErrorCause's contract is to never yield null/undefined
-    // (it returns at depth 0 when current is nullish), so this
-    // guard is defensive — kept in case a future change to the
-    // generator relaxes that invariant.
-    /* c8 ignore next */
-    if (link === null || link === undefined) continue
+    // walkErrorCause never yields null/undefined (it returns when
+    // the current link is nullish — see walk.ts line 34).
     if (typeof link === 'string') {
       if (REJECTION_MESSAGE_PATTERN.test(link)) return true
       continue

@@ -5,6 +5,11 @@ All notable changes to `@valve-tech/gas-oracle` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] — 2026-05-07
+
+### Notes
+- Synced version bump. Code-quality cleanup: split a `||` arm in `priorityFeeDecayCap` validation into two ifs (v8 short-circuits the `||` arm coverage), replacing one `c8 ignore` annotation with real branch coverage. One pre-existing annotation remains (`oracle.ts:453`, kept). 100/100/100/100 coverage holds.
+
 ## [0.8.0] — 2026-05-06
 
 Consumes `@valve-tech/chain-source@0.8.0`'s WS-aware `ChainSource` transparently. Adds upstream helpers (replacement / classifyTip / inclusion labels), chain presets (PulseChain), const-namespace exports, and a bigint migration of public numeric fields.

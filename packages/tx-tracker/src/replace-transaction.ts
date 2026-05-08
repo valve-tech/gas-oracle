@@ -57,13 +57,17 @@ export const replaceTransaction = async (
   // viem's WalletClient.sendTransaction has multiple overloads with strict
   // type-narrowing on chain/account. Cast is necessary to thread the request
   // through the type system without consumers having to specify all generic params.
+  // `chain` defers to `walletClient.chain` so viem's chain-id assertion runs
+  // (`chain: null` would silently disable it). `chainId` from the original is
+  // threaded through for EIP-155 signing and an extra wallet/original match check.
   return walletClient.sendTransaction({
     account: walletClient.account,
-    chain: null,
+    chain: walletClient.chain ?? null,
     to: original.to,
     data: original.data,
     value: original.value,
     nonce: original.nonce,
+    chainId: original.chainId,
     maxFeePerGas: newGas.maxFeePerGas,
     maxPriorityFeePerGas: newGas.maxPriorityFeePerGas,
   } as Parameters<typeof walletClient.sendTransaction>[0])

@@ -6,6 +6,11 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] — 2026-05-07
+
+### Removed
+- Defensive `link === null || link === undefined` guard in `isUserRejectionError`. `walkErrorCause`'s generator returns when the current link is nullish (`walk.ts:34`), so it never yields null/undefined — the guard was unreachable. No effect on public behavior; 100/100/100/100 coverage holds.
+
 ## [0.8.0] — 2026-05-06
 
 Synced version bump; no functional changes.
