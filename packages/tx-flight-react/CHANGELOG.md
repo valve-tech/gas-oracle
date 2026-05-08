@@ -8,5 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Initial scaffolding. First public release ships as `0.9.0` alongside
-the synchronized v0.9.0 toolkit release.
+Full v0.9.0 surface ships in the synchronized toolkit release.
+
+## [0.0.1] — 2026-05-08
+
+Name-claim publish so the npm trusted-publisher record can be wired
+before the synced v0.9.0 release. No usable surface — the package
+exports its types but the implementation lands at v0.9.0.
