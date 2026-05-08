@@ -22,36 +22,48 @@ Project-local notes for AI agents touching this package.
 6. **100/100/100/100 coverage gate.** Same as every other package
    in the toolkit.
 
-## File map (final, after all 12 tasks land)
+## File map
 
 ```
 src/
 ├── index.ts                    # public barrel
-├── types.ts                    # 3 add-input types, TxFlightStorage
+├── types.ts                    # 3 add-input types, TxFlightStorage, InternalState
+├── provider.tsx                # TxFlightProvider, module-level registry, context
+├── use-tx-flight.ts            # useTxFlight hook
+├── ssr.test.tsx                # @vitest-environment node
 ├── store/
-│   ├── reducers.ts             # pure functions
-│   ├── store.ts                # useSyncExternalStore-backed
-│   └── serialize.ts            # bigint-safe JSON for TrackedTx
+│   ├── reducers.ts             # pure: addReducer, updateReducer, removeReducer, evictReducer
+│   └── store.ts                # subscribable wrapper over reducers; cached txs projection
 ├── storage/
 │   ├── index.ts                # re-exports
 │   ├── memory.ts
 │   ├── local-storage.ts
-│   └── indexed-db.ts
+│   ├── indexed-db.ts
+│   └── serialize.ts            # bigint-safe JSON for TrackedTx
 ├── integrations/
-│   ├── wallet-adapter.ts       # wrapHooks, addWithWalletAdapterImpl
-│   └── tx-tracker.ts           # addByHashImpl (dynamic-imports tx-tracker)
-├── components/
-│   ├── status-icon.tsx
-│   ├── hash-link.tsx
-│   ├── age.tsx
-│   ├── actions.tsx
-│   ├── item.tsx
-│   └── list.tsx
-├── provider.tsx                # TxFlightProvider, context
-├── use-tx-flight.ts            # useTxFlight hook
-├── ssr.test.ts                 # @vitest-environment node
-└── (matching *.test.{ts,tsx} alongside each)
+│   ├── wallet-adapter.ts       # wrapHooks, addWithWalletAdapterImpl (types-only import)
+│   └── tx-tracker.ts           # subscribeWatcher, addByHashImpl, resumeByHashWatcher
+└── components/
+    ├── status-icon.tsx
+    ├── hash-link.tsx
+    ├── age.tsx
+    ├── actions.tsx
+    ├── item.tsx
+    └── list.tsx
 ```
+
+(matching `*.test.{ts,tsx}` alongside each.)
+
+## Rehydrate semantics
+
+- `preparing` / `awaiting-signature` on load → translated to `failed`
+  with `notes: 'lost during reload'`. Wallet interactions cannot
+  resume across reloads.
+- `pending` with `hash` AND `clientFactory` is wired → async-attach a
+  fresh `tx-tracker` watcher via `resumeByHashWatcher`. Errors during
+  re-subscribe are routed to `onError` as `'rehydrate-watcher'`.
+- `pending` without `clientFactory` → stays pending, no watcher.
+- Terminal statuses → preserved until eviction prunes them.
 
 ## Spec + plan
 
