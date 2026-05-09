@@ -1,0 +1,35 @@
+{
+  "name": "@valve-tech/trueblocks-sdk",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Typed TypeScript HTTP client to a running TrueBlocks chifra daemon. Wraps chifra's REST surface (the same one served by `chifra daemon`) with TS types generated from the upstream OpenAPI spec; no Go runtime, no shelling-out.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "node scripts/codegen.mjs --if-missing && tsc -p .",
+    "typecheck": "node scripts/codegen.mjs --if-missing && tsc -p . --noEmit",
+    "lint": "eslint src",
+    "test": "node scripts/codegen.mjs --if-missing && vitest run",
+    "test:coverage": "node scripts/codegen.mjs --if-missing && vitest run --coverage",
+    "codegen": "node scripts/codegen.mjs",
+    "prepare": "yarn build"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.4.0"
+  }
+}
