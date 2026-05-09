@@ -177,6 +177,45 @@ the package to already exist on npm. Chicken-and-egg. Solution:
 the trusted publisher, then add the publish step to release.yml, then
 subsequent publishes go through the workflow.
 
+### Pre-flight: package.json metadata that the OIDC publish needs
+
+Before either the manual name-claim or the OIDC publish, copy a
+sibling package's full metadata block into the new package's
+`package.json`. The OIDC workflow runs `npm publish --provenance`,
+which validates the published `package.json#repository.url` against
+the GitHub repo URL in the sigstore attestation — a missing or
+empty `repository` field fails the publish with HTTP 422 (see
+"Workflow fails at npm publish with HTTP 422 — provenance / repo
+mismatch" below).
+
+Required fields (mirror `chain-source/package.json` shape):
+
+```jsonc
+{
+  "homepage": "https://github.com/valve-tech/evm-toolkit/tree/main/packages/<name>#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/valve-tech/evm-toolkit.git",
+    "directory": "packages/<name>"
+  },
+  "bugs": {
+    "url": "https://github.com/valve-tech/evm-toolkit/issues"
+  },
+  "keywords": ["..."]
+}
+```
+
+**The manual name-claim publish does NOT enforce this** — `npm
+publish --access public` (no `--provenance`) accepts a package.json
+with no `repository`. So the failure shows up only on the first
+OIDC publish, mid-release, after six other packages already shipped
+at the new version. Add the metadata before the manual publish to
+avoid the recovery dance.
+
+The `private: true` flag (if present in scaffolding) also blocks
+`npm publish` outright, even with explicit args. Remove it before
+the manual name-claim publish.
+
 ### One-time first-publish dance
 
 ```bash
@@ -386,6 +425,55 @@ build at `--topological-dev`. Verify locally with `yarn verify:clean`
 (which deletes `dist/` AND `tsconfig.tsbuildinfo` files — `composite:
 true` makes tsc incremental, so deleting only dist isn't enough to
 force a true rebuild).
+
+### Workflow fails at `npm publish` with HTTP 422 — provenance / repo mismatch
+
+```
+npm error code E422
+npm error 422 Unprocessable Entity - PUT https://registry.npmjs.org/@valve-tech%2f<name>
+  - Error verifying sigstore provenance bundle:
+    Failed to validate repository information:
+    package.json: "repository.url" is "",
+    expected to match "https://github.com/valve-tech/evm-toolkit"
+    from provenance
+```
+
+**The v0.10.0 lesson.** The package's `package.json` has no
+`repository` field (or has one that doesn't match). The OIDC
+workflow runs `npm publish --provenance`, which validates
+`package.json#repository.url` against the sigstore attestation's
+GitHub repo URL — empty / missing / mismatched fails the publish
+with HTTP 422.
+
+This bites only the OIDC publish. The manual name-claim publish
+(`npm publish --access public` from a maintainer's machine, no
+`--provenance`) succeeds even with no `repository` field — so the
+package can sit on npm at the 0.0.1 name-claim, the trusted
+publisher record can be configured, and the failure only surfaces
+mid-release after the workflow has published six other packages.
+
+Fix:
+1. Add the missing metadata to the new package's `package.json`
+   (see "Pre-flight: package.json metadata that the OIDC publish
+   needs" in the "Adding a NEW package" section). At minimum,
+   `repository.url` must point at
+   `git+https://github.com/valve-tech/evm-toolkit.git`. Mirror a
+   sibling's full block (`homepage`, `repository`, `bugs`,
+   `keywords`) for consistency.
+2. Sync-bump every package to `vX.Y.Z+1` in a follow-up release
+   commit. **Don't try to republish the same version** — npm
+   rejects it for the packages that already succeeded.
+3. Mark the partially-published version as `*partial publish —
+   `<name>` missing, see vX.Y.Z+1*` in the affected CHANGELOGs and
+   the root CHANGELOG.
+4. Push the new tag — OIDC re-publishes the whole line, including
+   the previously-failed package.
+
+Prevention: when scaffolding a new package, copy the metadata block
+from `chain-source/package.json` (the canonical shape) before the
+first manual publish. The `verify:release-coverage` script catches
+missing Publish steps in `release.yml` but doesn't catch missing
+`repository` fields — that gap is what caused v0.10.0.
 
 ### Workflow ran green but a package didn't reach npm
 
