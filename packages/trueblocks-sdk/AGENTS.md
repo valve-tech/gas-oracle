@@ -6,7 +6,8 @@ Project-local notes for AI agents touching this package.
 
 **Experimental.** Vertical-slice prototype demonstrating the
 codegen-driven approach to wrapping chifra's HTTP API. Not yet
-published; license posture vs. the GPL upstream spec is unresolved.
+published. Licensed MIT (clean-room reimplementation against the
+public OpenAPI spec — see Clean-room rule below).
 
 ## Architectural invariants
 

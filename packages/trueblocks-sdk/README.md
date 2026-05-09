@@ -133,12 +133,8 @@ spec — your editor surfaces the available options via IntelliSense.
 
 ## License
 
-GPL-3.0-or-later, matching the upstream `trueblocks-core` project.
-You are free to use this package — including in commercial software
-— modify it, and redistribute it. If you redistribute, your
-modifications must also be GPL-3.0-or-later (copyleft). See the
-`LICENSE` file or https://www.gnu.org/licenses/gpl-3.0 for full
-terms.
-
-Note: this is the only GPL-licensed package under the `@valve-tech`
-scope. The other six toolkit packages are MIT.
+MIT, in line with the rest of the `@valve-tech/*` toolkit. The
+upstream `trueblocks-core` project is GPL-3.0-or-later, but this
+package is a clean-room TypeScript reimplementation against the
+public OpenAPI spec — no GPL code is incorporated. See the
+`LICENSE` file for full terms.
