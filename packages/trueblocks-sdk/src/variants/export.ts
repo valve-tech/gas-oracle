@@ -2,11 +2,9 @@
  * Variant accessors for `/export`. The chifra export endpoint is
  * the most polymorphic in the daemon's surface — a 15-type union.
  * We mirror the Go SDK's `ExportOptions.Export*()` family with one
- * narrowed method per boolean flag.
- *
- * Skipped for v1: the Go SDK's `ExportApprovalsLogs()`, which
- * combines `approvals: true` + `logs: true`. Callers needing that
- * combo can fall through to the polymorphic base call.
+ * narrowed method per boolean flag, plus the `approvalsLogs` combo
+ * (`approvals: true` + `logs: true`) that returns logs scoped to
+ * approval transactions.
  */
 import type { RequestFn } from '../client.js'
 import type { components } from '../generated.js'
@@ -64,6 +62,15 @@ export interface ExportVerb extends VerbFn<'/export'> {
   count: (
     query: Omit<ExportQuery, 'count'>,
   ) => Promise<Envelope<components['schemas']['count']>>
+  /**
+   * `?approvals=true&logs=true` — logs emitted by approval
+   * transactions for the address. Combo of the `approvals` and
+   * `logs` flags; returns the same `Log[]` shape as `.logs()` but
+   * filtered to approval-emitting txs.
+   */
+  approvalsLogs: (
+    query: Omit<ExportQuery, 'approvals' | 'logs'>,
+  ) => Promise<Envelope<components['schemas']['log']>>
 }
 
 export function makeExportVerb(request: RequestFn): ExportVerb {
@@ -86,5 +93,11 @@ export function makeExportVerb(request: RequestFn): ExportVerb {
     balances: variant('balances'),
     withdrawals: variant('withdrawals'),
     count: variant('count'),
+    approvalsLogs: (query: Omit<ExportQuery, 'approvals' | 'logs'>) =>
+      base({
+        ...(query as ExportQuery),
+        approvals: true,
+        logs: true,
+      }) as Promise<unknown>,
   }) as ExportVerb
 }

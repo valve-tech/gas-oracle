@@ -36,4 +36,26 @@ describe('makeChunksVerb', () => {
       expect(request).toHaveBeenCalledWith('/chunks', { mode: expectedMode })
     },
   )
+
+  // count and check are flag-modifier variants — caller still picks
+  // the mode, the variant just narrows the return type.
+  const flagCases: Array<['count' | 'check', 'count' | 'check']> = [
+    ['count', 'count'],
+    ['check', 'check'],
+  ]
+
+  it.each(flagCases)(
+    '%s variant sets %s=true and forwards mode',
+    async (variantName, expectedFlag) => {
+      const request = vi.fn().mockResolvedValue({ data: [] })
+      const chunks = makeChunksVerb(request as unknown as RequestFn)
+
+      await chunks[variantName]({ mode: 'index' })
+
+      expect(request).toHaveBeenCalledWith('/chunks', {
+        mode: 'index',
+        [expectedFlag]: true,
+      })
+    },
+  )
 })

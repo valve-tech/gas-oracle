@@ -43,4 +43,17 @@ describe('makeExportVerb', () => {
       [variantName]: true,
     })
   })
+
+  it('approvalsLogs combo sets both approvals=true and logs=true', async () => {
+    const request = vi.fn().mockResolvedValue({ data: [] })
+    const exp = makeExportVerb(request as unknown as RequestFn)
+
+    await exp.approvalsLogs({ addrs: ['0xabc'] })
+
+    expect(request).toHaveBeenCalledWith('/export', {
+      addrs: ['0xabc'],
+      approvals: true,
+      logs: true,
+    })
+  })
 })
