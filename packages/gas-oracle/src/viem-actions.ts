@@ -34,15 +34,15 @@ import {
   type BlockPositionQuery,
   type BlockPositionResult,
 } from './block-position.js'
+import type { NormalizedMempool, TxPoolContent } from '@valve-tech/chain-source'
+
 import {
   findInMempool,
   normalizeMempool,
   type MempoolHit,
-  type NormalizedMempool,
   type TxIdentifier,
 } from './mempool.js'
 import { createGasOracle, type CreateGasOracleOptions, type GasOracle } from './oracle.js'
-import type { TxPoolContent } from './transport.js'
 import type { GasOracleState, TierName, TierRecommendation, TipSample } from './types.js'
 
 export interface GasOracleActionsOptions extends Omit<CreateGasOracleOptions, 'client'> {

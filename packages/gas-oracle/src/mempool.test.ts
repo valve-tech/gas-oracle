@@ -1,3 +1,4 @@
+import type { TxPoolContent } from '@valve-tech/chain-source'
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -6,7 +7,6 @@ import {
   findInMempool,
   normalizeMempool,
 } from './mempool.js'
-import type { TxPoolContent } from './transport.js'
 
 const tx = (
   overrides: Partial<{

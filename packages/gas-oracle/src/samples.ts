@@ -9,9 +9,14 @@
  * shapes without touching either neighbor.
  */
 
+import type {
+  BlockResult,
+  RawTx,
+  TxPoolContent,
+} from '@valve-tech/chain-source'
+
 import { effectiveTip } from './math.js'
-import type { BlockResult, TxPoolContent } from './transport.js'
-import type { BlockSample, RawTx, TipSample } from './types.js'
+import type { BlockSample, TipSample } from './types.js'
 
 /**
  * Decode the EIP-2718 type byte from its hex-string wire form.

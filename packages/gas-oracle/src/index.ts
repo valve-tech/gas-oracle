@@ -43,14 +43,10 @@ export {
 export {
   fetchOracleInputs,
   fetchHeadBlockNumber,
-  type FeeHistoryResult,
-  type BlockResult,
-  type TxPoolContent,
   type OraclePollInputs,
 } from './transport.js'
 
 export type {
-  RawTx,
   TipPercentiles,
   TierRecommendation,
   MempoolStats,
@@ -58,7 +54,6 @@ export type {
   BlockSample,
   GasOracleState,
   TipSample,
-  PollOptions,
 } from './types.js'
 
 // Const-namespace pairs (value + type share the identifier — see types.ts).
@@ -72,11 +67,25 @@ export {
   findInMempool,
 } from './mempool.js'
 export type {
-  NormalizedMempool,
   TxIdentifier,
   MempoolBucket,
   MempoolHit,
 } from './mempool.js'
+
+/**
+ * Wire-shape types describing raw `eth_*` responses, plus the poll-cycle
+ * toggle. Owned by `@valve-tech/chain-source`; re-exported here so
+ * downstream consumers don't have to add a second package import to
+ * type a fixture or a stored snapshot.
+ */
+export type {
+  BlockResult,
+  FeeHistoryResult,
+  NormalizedMempool,
+  PollOptions,
+  RawTx,
+  TxPoolContent,
+} from '@valve-tech/chain-source'
 
 // Block-position calculations
 export { tipForBlockPosition } from './block-position.js'

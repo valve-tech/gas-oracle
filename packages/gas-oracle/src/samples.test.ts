@@ -3,10 +3,10 @@
  * Targets the previously-uncovered defensive arms of the hex-decode
  * helpers and the malformed-input fallbacks in `mempoolToSamples`.
  */
+import type { BlockResult, TxPoolContent } from '@valve-tech/chain-source'
 import { test, expect } from 'vitest'
 
 import { blockToSample, mempoolToSamples } from './samples.js'
-import type { BlockResult, TxPoolContent } from './transport.js'
 
 const hex = (n: bigint) => '0x' + n.toString(16)
 

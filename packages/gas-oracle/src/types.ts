@@ -6,29 +6,13 @@
  * since JSON has no native bigint and `JSON.stringify` will throw on raw
  * bigint values. The caller owns that encoding — this package keeps the
  * canonical numeric form internally.
- */
-
-/**
- * Minimal tx shape extracted from `eth_getBlockByNumber(latest, true)` or
- * `txpool_content`. Fee fields drive tip math; `hash`, `from`, `nonce`
- * support mempool lookups (`findByHash` / `findByAddressNonce`). Other
- * tx fields (to/value/data/etc.) are ignored.
  *
- * `hash`, `from`, `nonce` are nominally optional because `eth_get-
- * BlockByNumber(_, true)` blocks always carry them but we want callers
- * to be able to construct `RawTx` from minimal fixtures in tests.
- * geth/reth `txpool_content` includes all three.
+ * Wire-shape types describing raw `eth_*` responses (`RawTx`,
+ * `BlockResult`, `FeeHistoryResult`, `TxPoolContent`, `NormalizedMempool`)
+ * and the poll-cycle toggle (`PollOptions`) live in
+ * `@valve-tech/chain-source`. This package re-exports them from `index.ts`
+ * for downstream API stability.
  */
-export interface RawTx {
-  maxPriorityFeePerGas?: string
-  maxFeePerGas?: string
-  gasPrice?: string
-  gas?: string
-  type?: string
-  hash?: string
-  from?: string
-  nonce?: string
-}
 
 export interface TipPercentiles {
   p10: bigint
@@ -156,26 +140,6 @@ export const TxType = {
   setCodeAuthorization: 4,
 } as const
 export type TxType = (typeof TxType)[keyof typeof TxType]
-
-/**
- * Producer-side toggles: which RPCs the oracle calls upstream each cycle.
- *
- * Fields default to true. `eth_getBlockByNumber` is intentionally not
- * toggleable — without a block we can't compute anything.
- *
- * - `feeHistory: false` — drops `eth_feeHistory`. Trend detection falls
- *                          back to a single-element history (always
- *                          reports `'stable'`); percentile fallback
- *                          becomes block-only.
- * - `mempool: false`    — drops `txpool_content`. Tiers reflect block
- *                          inclusion only, not pending pressure. Useful
- *                          when the upstream provider gates the
- *                          method (many public RPCs return 405).
- */
-export interface PollOptions {
-  feeHistory?: boolean
-  mempool?: boolean
-}
 
 /**
  * One block's worth of state retained in the rolling ring. Per-tx tips

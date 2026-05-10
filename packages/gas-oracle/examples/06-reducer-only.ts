@@ -16,13 +16,14 @@
  * Run with: yarn tsx examples/06-reducer-only.ts
  */
 
-import { reducePollInputs } from '../src/index.js'
 import type {
   BlockResult,
   FeeHistoryResult,
-  OraclePollInputs,
   TxPoolContent,
-} from '../src/transport.js'
+} from '@valve-tech/chain-source'
+
+import { reducePollInputs } from '../src/index.js'
+import type { OraclePollInputs } from '../src/transport.js'
 import type { GasOracleState } from '../src/types.js'
 
 const toHex = (n: bigint): string => '0x' + n.toString(16)

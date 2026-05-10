@@ -8,12 +8,13 @@
  * blob fee) is handled here rather than at higher layers.
  */
 
+import type { RawTx } from '@valve-tech/chain-source'
+
 import {
   PriorityModel,
   TierName,
   Trend,
   TxType,
-  type RawTx,
   type TierRecommendation,
   type TipPercentiles,
   type TipSample,

@@ -17,6 +17,7 @@ import {
   type BlockResult,
   type ChainSource,
   type NormalizedMempool,
+  type PollOptions,
 } from '@valve-tech/chain-source'
 
 import { fetchOracleInputs, type OraclePollInputs } from './transport.js'
@@ -31,7 +32,6 @@ import type {
   BlobStats,
   GasOracleState,
   MempoolStats,
-  PollOptions,
   PriorityModel,
 } from './types.js'
 

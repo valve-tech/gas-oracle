@@ -1,3 +1,4 @@
+import type { BlockResult, RawTx } from '@valve-tech/chain-source'
 import { describe, it, expect } from 'vitest'
 
 import {
@@ -12,11 +13,9 @@ import {
   sortedTips,
 } from './math.js'
 import { blockToSample } from './samples.js'
-import type { BlockResult } from './transport.js'
 import {
   PriorityModel,
   Trend,
-  type RawTx,
   type TipSample,
 } from './types.js'
 

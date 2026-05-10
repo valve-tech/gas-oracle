@@ -20,16 +20,11 @@
  * the invariant.
  */
 
-import type { TxPoolContent } from './transport.js'
-import type { RawTx } from './types.js'
-
-/**
- * `TxPoolContent` after a single normalization pass — every sender
- * address key is lowercase ASCII, every nonce key is a decimal string.
- * All lookup helpers expect this form; pass raw `TxPoolContent` through
- * `normalizeMempool` first.
- */
-export type NormalizedMempool = TxPoolContent
+import type {
+  NormalizedMempool,
+  RawTx,
+  TxPoolContent,
+} from '@valve-tech/chain-source'
 
 /**
  * Discriminated identifier for a single tx — either by its hash, or by

@@ -22,41 +22,23 @@
  * its decoded Block type uniformly across versions.
  */
 
+import type {
+  BlockResult,
+  FeeHistoryResult,
+  PollOptions,
+  TxPoolContent,
+} from '@valve-tech/chain-source'
 import type { PublicClient } from 'viem'
 
-import type { PollOptions, RawTx } from './types.js'
-
-/** Result shape returned by `eth_feeHistory`. */
-export interface FeeHistoryResult {
-  baseFeePerGas: string[]
-  reward?: string[][]
-  gasUsedRatio: number[]
-  oldestBlock: string
-}
-
 /**
- * Result shape returned by `eth_getBlockByNumber` with `fullTransactions=true`.
- * Hex-encoded numbers are kept as strings — the oracle decodes them at the
- * point of use to keep transport boundary-typed and the math layer pure.
+ * Combined upstream payload one oracle poll cycle consumes. Each field is
+ * `null` when its underlying RPC failed or was disabled by `PollOptions`;
+ * `reducePollInputs` handles every shape independently.
+ *
+ * The wire-shape members (`FeeHistoryResult`, `BlockResult`, `TxPoolContent`)
+ * are owned by `@valve-tech/chain-source`; this composite shape stays here
+ * because it's gas-oracle's call shape, not chain-source's.
  */
-export interface BlockResult {
-  number: string
-  hash?: string
-  parentHash?: string
-  timestamp: string
-  baseFeePerGas: string
-  gasLimit: string
-  gasUsed: string
-  transactions: RawTx[]
-  excessBlobGas?: string
-  blobGasUsed?: string
-}
-
-export interface TxPoolContent {
-  pending: Record<string, Record<string, RawTx>>
-  queued: Record<string, Record<string, RawTx>>
-}
-
 export interface OraclePollInputs {
   feeHistory: FeeHistoryResult | null
   block: BlockResult | null

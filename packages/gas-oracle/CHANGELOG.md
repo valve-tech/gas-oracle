@@ -5,6 +5,20 @@ All notable changes to `@valve-tech/gas-oracle` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Wire-shape types (`RawTx`, `BlockResult`, `FeeHistoryResult`,
+  `TxPoolContent`, `NormalizedMempool`) and the poll-cycle toggle
+  (`PollOptions`) are no longer declared locally — they're imported
+  from `@valve-tech/chain-source`, the canonical owner. The package
+  continues to re-export every one from `index.ts`, so downstream
+  `import { RawTx } from '@valve-tech/gas-oracle'` keeps working.
+  Type identity now unifies across the toolkit (a `BlockResult`
+  from gas-oracle is the same nominal type as one from chain-source).
+  No runtime change; no breaking change in consumed shapes.
+
 ## [0.10.1] — 2026-05-08
 
 Synchronized release — no changes to this package. Republished at
