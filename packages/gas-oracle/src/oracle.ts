@@ -27,9 +27,11 @@ import {
   detectTrend,
   flattenTxPool,
 } from './math.js'
+import { incorporateBlock } from './ring.js'
 import { blockToSample, mempoolToSamples } from './samples.js'
 import type {
   BlobStats,
+  BlockSample,
   GasOracleState,
   MempoolStats,
   PriorityModel,
@@ -177,6 +179,19 @@ export interface CreateGasOracleOptions {
    * Web Worker contexts where `document` is undefined.
    */
   pauseWhenHidden?: boolean
+  /**
+   * How many recent blocks to retain in `state.ring` for percentile
+   * sampling and reorg detection. Default 20n (matches the
+   * `eth_feeHistory` window). Pass 0n to disable the cap (the ring
+   * grows without bound; only useful for replay harnesses).
+   *
+   * The ring fills naturally as the poll loop receives blocks, with
+   * pre-fetched gap bridging via `source.getBlock` when consecutive
+   * polls miss intermediate blocks. Larger windows give more samples
+   * (more stable tier numbers) at the cost of more memory and more
+   * I/O on resume after a long pause.
+   */
+  ringWindowBlocks?: bigint
 }
 
 export interface GasOracle {
@@ -212,20 +227,46 @@ export interface GasOracle {
   subscribe: (cb: (state: GasOracleState) => void) => () => void
 }
 
+const DEFAULT_RING_WINDOW_BLOCKS = 20n
+
 /**
  * Reduce a poll cycle's RPC outputs into a new oracle state, using the
  * previous state to anchor the cap-decay and the base-fee history.
  *
  * Pure: no I/O, no global state, no time. Test by feeding it fixture
  * inputs and asserting the returned shape.
+ *
+ * Ring lifecycle. The reducer maintains `state.ring` across calls
+ * using `incorporateBlock` (see `ring.ts`): clean appends, duplicate
+ * detection, reorg trim, restart on irrecoverable gaps. The poll loop
+ * in `createGasOracle` pre-fetches missing blocks for clean gaps and
+ * passes them as `historicalBlocks` so the ring stays dense across
+ * brief interruptions; callers using `reducePollInputs` directly
+ * (replay harnesses, snapshot tests) can pass the same param.
  */
 export const reducePollInputs = (input: {
   inputs: OraclePollInputs
   chainId: number
   prev: GasOracleState | null
+  /**
+   * Older blocks to slot into the ring before the current input block.
+   * Ordered oldest → newest. Used by the I/O-driven gap bridge in
+   * `oracle.ts`'s poll loop and by replay harnesses; standalone callers
+   * can omit it. Each historical block contributes its `tips` to the
+   * percentile sample base; `feeHistory` and `txPool` from `inputs`
+   * still apply to the current block only.
+   */
+  historicalBlocks?: BlockResult[]
   priorityFeeDecayCap?: bigint | null
   priorityModel?: PriorityModel
   baseFeeLivenessBlocks?: number
+  /**
+   * Maximum ring size. Defaults to 20 blocks (matching the
+   * `eth_feeHistory` window). Pass 0n to disable the cap. Older
+   * entries are dropped from the head as new appends would exceed
+   * the window.
+   */
+  ringWindowBlocks?: bigint
 }): GasOracleState | null => {
   const { block, feeHistory, txPool } = input.inputs
   if (!block) return null
@@ -242,14 +283,22 @@ export const reducePollInputs = (input: {
     : [baseFee]
   const baseFeeTrend = detectTrend(baseFeeHistory.slice(-TREND_WINDOW))
 
-  // Build the rolling ring. The full 20-block append/bridgeGap/clear
-  // lifecycle is deferred (spec §7-§9); for now we keep window = 1 by
-  // populating ring as a single-element array from the current block.
-  // Forward-compatible: callers can read `state.ring` as a list of
-  // BlockSamples without caring how many entries are in it.
+  // Build the rolling ring. Pure helper handles append / duplicate /
+  // reorg-trim / restart; the I/O-driven gap bridge happens in
+  // `handleBlock` and arrives here pre-fetched via `historicalBlocks`.
+  const ringWindow = input.ringWindowBlocks ?? DEFAULT_RING_WINDOW_BLOCKS
+  let workingRing: BlockSample[] = input.prev?.ring ?? []
+  let lastReorg = input.prev?.lastReorg ?? null
+  for (const histBlock of input.historicalBlocks ?? []) {
+    const histMutation = incorporateBlock(workingRing, blockToSample(histBlock), ringWindow)
+    workingRing = histMutation.ring
+    if (histMutation.reorg) lastReorg = histMutation.reorg
+  }
   const blockSample = blockToSample(block)
-  const ring = [blockSample]
-  const ringSamples = blockSample.tips
+  const mutation = incorporateBlock(workingRing, blockSample, ringWindow)
+  const ring = mutation.ring
+  if (mutation.reorg) lastReorg = mutation.reorg
+  const ringSamples = ring.flatMap((b) => b.tips)
 
   // Mempool — best-effort signal.
   let mempool: MempoolStats = {
@@ -316,6 +365,7 @@ export const reducePollInputs = (input: {
     blob,
     tiers,
     ring,
+    lastReorg,
     mempoolSamples,
     lastPublishedTips: publishedTips,
     lastPublishedBlockNumber: blockNumber,
@@ -436,17 +486,26 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
     }
   }
 
+  const ringWindowBlocks = options.ringWindowBlocks ?? DEFAULT_RING_WINDOW_BLOCKS
+
   // Reduce a (block, feeHistory, mempool) tuple into the next state +
   // notify. Shared between the subscribe-driven path (timer ticks) and
-  // the on-demand path (`pollOnce`).
-  const reduceAndPublish = (inputs: OraclePollInputs): GasOracleState | null => {
+  // the on-demand path (`pollOnce`). `historicalBlocks` carries any
+  // gap-bridge blocks fetched by `handleBlock` so the ring fills in
+  // chronological order in a single reducer call (one notification).
+  const reduceAndPublish = (
+    inputs: OraclePollInputs,
+    historicalBlocks?: BlockResult[],
+  ): GasOracleState | null => {
     const next = reducePollInputs({
       inputs,
+      historicalBlocks,
       chainId: options.chainId,
       prev: state,
       priorityFeeDecayCap: options.priorityFeeDecayCap,
       priorityModel: options.priorityModel,
       baseFeeLivenessBlocks: options.baseFeeLivenessBlocks,
+      ringWindowBlocks,
     })
     // `next` is null only when the input block is null, but every
     // caller of reduceAndPublish (handleBlock, pollOnce) already
@@ -460,14 +519,51 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
     return next
   }
 
+  /**
+   * Pre-fetch missing blocks between `prev.ring`'s tip and `newBlock`
+   * so the reducer's ring stays dense across brief upstream pauses.
+   *
+   * Bounded by `ringWindowBlocks` — gaps larger than the window
+   * trigger a ring restart anyway, so spending RPC calls to bridge
+   * them is wasted. Each missing block is fetched by number via
+   * `source.getBlock`. Failures are silently dropped: a partial bridge
+   * still leaves the new block as the new tip, and the reducer's pure
+   * helper handles incomplete ancestry by restarting if necessary.
+   *
+   * Reorgs (parentHash mismatch with `prev.tip.hash`) are NOT
+   * backfilled here — that would require fetching by hash, which
+   * `chain-source` doesn't expose. The reducer's trim handles them
+   * correctly; the new canonical branch refills via natural forward
+   * polling.
+   */
+  const bridgeGap = async (newBlock: BlockResult): Promise<BlockResult[]> => {
+    if (state === null || state.ring.length === 0) return []
+    const tip = state.ring[state.ring.length - 1]
+    const newNumber = BigInt(newBlock.number)
+    const gap = newNumber - tip.number
+    if (gap <= 1n) return []
+    if (ringWindowBlocks > 0n && gap > ringWindowBlocks) return []
+    const missing: BlockResult[] = []
+    for (let n = tip.number + 1n; n < newNumber; n += 1n) {
+      const fetched = await source.getBlock(n)
+      if (!fetched) break
+      missing.push(fetched)
+    }
+    return missing
+  }
+
   // Block-event handler. Fires once per de-duped block emit from the
   // source. Fetches feeHistory on demand (so a static head doesn't
-  // re-fetch it), then reduces with the most recent mempool snapshot.
+  // re-fetch it), bridges any clean gap from the prev tip, then
+  // reduces with the most recent mempool snapshot.
   const handleBlock = async (block: BlockResult): Promise<void> => {
-    const feeHistory = fetchFeeHistoryEnabled
-      ? await source.getFeeHistory(20, [10, 25, 50, 75, 90])
-      : null
-    reduceAndPublish({ block, feeHistory, txPool: latestMempool })
+    const [feeHistory, historicalBlocks] = await Promise.all([
+      fetchFeeHistoryEnabled
+        ? source.getFeeHistory(20, [10, 25, 50, 75, 90])
+        : Promise.resolve(null),
+      bridgeGap(block),
+    ])
+    reduceAndPublish({ block, feeHistory, txPool: latestMempool }, historicalBlocks)
   }
 
   // Mempool-event handler. Caches the latest snapshot for the next
@@ -606,19 +702,23 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
     pollOnce: async () => {
       const block = await source.getBlock('latest')
       if (!block) return null
-      const [feeHistory, freshMempool] = await Promise.all([
+      const [feeHistory, freshMempool, historicalBlocks] = await Promise.all([
         fetchFeeHistoryEnabled
           ? source.getFeeHistory(20, [10, 25, 50, 75, 90])
           : Promise.resolve(null),
         fetchMempoolEnabled
           ? source.getMempoolSnapshot()
           : Promise.resolve(null),
+        bridgeGap(block),
       ])
       latestMempool = freshMempool
       if (retainMempool) {
         mempoolSnapshot = freshMempool
       }
-      return reduceAndPublish({ block, feeHistory, txPool: freshMempool })
+      return reduceAndPublish(
+        { block, feeHistory, txPool: freshMempool },
+        historicalBlocks,
+      )
     },
     subscribe: (cb) => {
       subscribers.add(cb)

@@ -224,12 +224,17 @@ describe('reducePollInputs', () => {
   })
 
   it('threads lastPublishedTips through to the next-cycle cap anchor', () => {
+    // ringWindowBlocks: 1n isolates the cap mechanism — with the default
+    // 20-block ring, B1's tips would persist into N+1's distribution and
+    // the cap wouldn't fire. Single-block ring restores the v0.10
+    // single-block-per-tick semantics for this test's assertion.
     const prev: GasOracleState = reducePollInputs({
       inputs: blockOnly({
         transactions: [{ gasPrice: hex(5_000_000_000n + baseFeeGwei), gas: '0x5208', type: '0x0' }],
       }),
       chainId: 1,
       prev: null,
+      ringWindowBlocks: 1n,
     })!
     expect(prev.lastPublishedTips).toBeDefined()
     expect(prev.lastPublishedBlockNumber).toBe(0x1234n)
@@ -237,7 +242,7 @@ describe('reducePollInputs', () => {
     // Next block: tips collapse to zero. Cap should hold the floor at 7/8 of prev.
     const nextInputs = blockOnly()
     nextInputs.block!.number = '0x1235'
-    const next = reducePollInputs({ inputs: nextInputs, chainId: 1, prev })!
+    const next = reducePollInputs({ inputs: nextInputs, chainId: 1, prev, ringWindowBlocks: 1n })!
     // 5_000_000_000 * 7/8 = 4_375_000_000
     expect(next.tiers.slow.maxPriorityFeePerGas).toBe(4_375_000_000n)
   })
@@ -247,6 +252,12 @@ describe('reducePollInputs', () => {
     // block N; block N+1 lands empty (or all spam-lane). Without the cap
     // the customer would see standard collapse to 0 and underbid the
     // very next block. The cap holds it at 5000 * 7/8.
+    //
+    // ringWindowBlocks: 1n isolates the cap from the ring's
+    // multi-block stabilization — with the default 20-block ring, B1's
+    // 5_000_000_000n tip carries forward and standard never collapses
+    // to zero, so the cap mechanism is moot. Single-block ring forces
+    // the empty-block scenario this test is asserting.
     const prev: GasOracleState = reducePollInputs({
       inputs: blockOnly({
         transactions: [
@@ -258,6 +269,7 @@ describe('reducePollInputs', () => {
       // Cap-anchor test uses legacy txs to seed lastPublishedTips —
       // explicit `flat` so paying-lane tiers pick them up.
       priorityModel: PriorityModel.flat,
+      ringWindowBlocks: 1n,
     })!
     expect(prev.lastPublishedTips!.standard).toBe(5_000_000_000n)
 
@@ -268,6 +280,7 @@ describe('reducePollInputs', () => {
       chainId: 1,
       prev,
       priorityModel: PriorityModel.flat,
+      ringWindowBlocks: 1n,
     })!
     expect(next.tiers.standard.maxPriorityFeePerGas).toBe(4_375_000_000n)
     expect(next.lastPublishedTips!.standard).toBe(4_375_000_000n)
@@ -276,6 +289,11 @@ describe('reducePollInputs', () => {
   it('lets rapid upside through the cap unclamped', () => {
     // Reverse direction: paying lane spikes 100x on the next block; the
     // cap must not impede upside.
+    //
+    // ringWindowBlocks: 1n keeps the assertion focused on the cap (no
+    // upside-clamp) instead of the multi-block ring's smoothing — with
+    // the default 20-block ring, B1's 500M-tip persists in the
+    // distribution and standard would land somewhere between the two.
     const prev: GasOracleState = reducePollInputs({
       inputs: blockOnly({
         transactions: [
@@ -286,6 +304,7 @@ describe('reducePollInputs', () => {
       prev: null,
       // Same reason as the suppress-whipsaw test above: legacy-only fixture.
       priorityModel: PriorityModel.flat,
+      ringWindowBlocks: 1n,
     })!
 
     const nextInputs = blockOnly({
@@ -299,11 +318,12 @@ describe('reducePollInputs', () => {
       chainId: 1,
       prev,
       priorityModel: PriorityModel.flat,
+      ringWindowBlocks: 1n,
     })!
     expect(next.tiers.standard.maxPriorityFeePerGas).toBe(50_000_000_000n)
   })
 
-  it('populates ring with a single-element BlockSample (forward-compat)', () => {
+  it('populates ring with a single-element BlockSample on first cycle', () => {
     const next = reducePollInputs({
       inputs: blockOnly({
         transactions: [
@@ -317,6 +337,163 @@ describe('reducePollInputs', () => {
     expect(next.ring[0].number).toBe(0x1234n)
     expect(next.ring[0].tips).toHaveLength(1)
     expect(next.ring[0].tips[0].tip).toBe(100_000_000_000n)
+    expect(next.lastReorg).toBeNull()
+  })
+
+  it('appends consecutive blocks into the ring (clean append path)', () => {
+    // First block.
+    const s1 = reducePollInputs({
+      inputs: blockOnly({
+        transactions: [{ gasPrice: hex(2_000_000_000n + baseFeeGwei), gas: '0x5208', type: '0x0' }],
+      }),
+      chainId: 1,
+      prev: null,
+    })!
+    // Second block, parentHash matches first's hash.
+    const inputs2 = blockOnly({
+      transactions: [{ gasPrice: hex(3_000_000_000n + baseFeeGwei), gas: '0x5208', type: '0x0' }],
+    })
+    inputs2.block!.number = '0x1235'
+    inputs2.block!.parentHash = s1.ring[0].hash
+    inputs2.block!.hash = '0xchild'
+    const s2 = reducePollInputs({ inputs: inputs2, chainId: 1, prev: s1 })!
+    expect(s2.ring).toHaveLength(2)
+    expect(s2.ring[0].number).toBe(0x1234n)
+    expect(s2.ring[1].number).toBe(0x1235n)
+    expect(s2.lastReorg).toBeNull()
+  })
+
+  it('caps the ring at ringWindowBlocks (head trimmed on append)', () => {
+    let state: GasOracleState | null = null
+    let parentHash = '0xprev'
+    // Build a 5-block chain into a ring capped at 3.
+    for (let i = 0; i < 5; i += 1) {
+      const inputs = blockOnly()
+      inputs.block!.number = '0x' + (0x1000 + i).toString(16)
+      inputs.block!.parentHash = parentHash
+      inputs.block!.hash = '0xb' + i
+      state = reducePollInputs({ inputs, chainId: 1, prev: state, ringWindowBlocks: 3n })!
+      parentHash = state.ring[state.ring.length - 1].hash
+    }
+    expect(state!.ring).toHaveLength(3)
+    expect(state!.ring.map((b) => Number(b.number))).toEqual([0x1002, 0x1003, 0x1004])
+  })
+
+  it('detects a reorg, trims the diverged tail, and emits lastReorg', () => {
+    // Build [B1, B2].
+    const s1 = reducePollInputs({
+      inputs: (() => {
+        const i = blockOnly()
+        i.block!.hash = '0xa'
+        i.block!.parentHash = '0xprev'
+        return i
+      })(),
+      chainId: 1,
+      prev: null,
+    })!
+    const i2 = blockOnly()
+    i2.block!.number = '0x1235'
+    i2.block!.parentHash = '0xa'
+    i2.block!.hash = '0xb'
+    const s2 = reducePollInputs({ inputs: i2, chainId: 1, prev: s1 })!
+    expect(s2.ring.map((b) => b.hash)).toEqual(['0xa', '0xb'])
+
+    // Reorg: replace B2 with B2'.
+    const i2prime = blockOnly()
+    i2prime.block!.number = '0x1235'
+    i2prime.block!.parentHash = '0xa'
+    i2prime.block!.hash = '0xb-prime'
+    const s3 = reducePollInputs({ inputs: i2prime, chainId: 1, prev: s2 })!
+    expect(s3.ring.map((b) => b.hash)).toEqual(['0xa', '0xb-prime'])
+    expect(s3.lastReorg).toEqual({
+      blockNumber: 0x1235n,
+      depth: 1n,
+      newTipHash: '0xb-prime',
+      droppedHashes: ['0xb'],
+    })
+  })
+
+  it('persists lastReorg across subsequent clean appends (until the next reorg)', () => {
+    const s1 = reducePollInputs({
+      inputs: (() => {
+        const i = blockOnly()
+        i.block!.hash = '0xa'
+        return i
+      })(),
+      chainId: 1,
+      prev: null,
+    })!
+    // Trigger a reorg by passing a same-height different-hash block.
+    const i2 = blockOnly()
+    i2.block!.hash = '0xa-prime'
+    const s2 = reducePollInputs({ inputs: i2, chainId: 1, prev: s1 })!
+    expect(s2.lastReorg).not.toBeNull()
+    const reorgEvent = s2.lastReorg!
+
+    // Clean append after the reorg — lastReorg should persist.
+    const i3 = blockOnly()
+    i3.block!.number = '0x1235'
+    i3.block!.parentHash = '0xa-prime'
+    i3.block!.hash = '0xnext'
+    const s3 = reducePollInputs({ inputs: i3, chainId: 1, prev: s2 })!
+    expect(s3.lastReorg).toBe(reorgEvent)
+  })
+
+  it('slots historicalBlocks into the ring before the current block', () => {
+    // Seed with B1.
+    const s1 = reducePollInputs({
+      inputs: (() => {
+        const i = blockOnly()
+        i.block!.hash = '0xa'
+        return i
+      })(),
+      chainId: 1,
+      prev: null,
+    })!
+    // Build B2, B3, B4 as historical, and B5 as the current block.
+    const histBlock = (n: number, parent: string, hash: string) => {
+      const i = blockOnly()
+      i.block!.number = '0x' + (0x1234 + n).toString(16)
+      i.block!.parentHash = parent
+      i.block!.hash = hash
+      return i.block!
+    }
+    const b2 = histBlock(1, '0xa', '0xb')
+    const b3 = histBlock(2, '0xb', '0xc')
+    const b4 = histBlock(3, '0xc', '0xd')
+    const inputs5 = blockOnly()
+    inputs5.block!.number = '0x1238'
+    inputs5.block!.parentHash = '0xd'
+    inputs5.block!.hash = '0xe'
+
+    const s5 = reducePollInputs({
+      inputs: inputs5,
+      historicalBlocks: [b2, b3, b4],
+      chainId: 1,
+      prev: s1,
+    })!
+    expect(s5.ring.map((b) => b.hash)).toEqual(['0xa', '0xb', '0xc', '0xd', '0xe'])
+  })
+
+  it('restarts the ring when a new block arrives with an unrecoverable gap', () => {
+    const s1 = reducePollInputs({
+      inputs: (() => {
+        const i = blockOnly()
+        i.block!.hash = '0xa'
+        return i
+      })(),
+      chainId: 1,
+      prev: null,
+    })!
+    // Far-ahead block with no parentHash relationship to the ring.
+    const inputs2 = blockOnly()
+    inputs2.block!.number = '0x9999'
+    inputs2.block!.parentHash = '0xunknown'
+    inputs2.block!.hash = '0xfar'
+    const s2 = reducePollInputs({ inputs: inputs2, chainId: 1, prev: s1 })!
+    expect(s2.ring).toHaveLength(1)
+    expect(s2.ring[0].hash).toBe('0xfar')
+    expect(s2.lastReorg).toBeNull() // restart is not a reorg signal
   })
 
   it('preserves mempoolSamples on the published state', () => {

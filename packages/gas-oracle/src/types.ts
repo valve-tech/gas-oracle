@@ -14,6 +14,8 @@
  * for downstream API stability.
  */
 
+import type { ReorgEvent } from './ring.js'
+
 export interface TipPercentiles {
   p10: bigint
   p25: bigint
@@ -174,12 +176,31 @@ export interface GasOracleState {
   blob: BlobStats | null
   tiers: Record<TierName, TierRecommendation>
   /**
-   * Rolling ring of recent blocks (oldest → newest). Producer-only.
-   * Currently always single-element; the 20-block lifecycle (append /
-   * bridgeGap / clearAndBackfill) is deferred to a follow-up per spec
-   * §7-§9.
+   * Rolling ring of recent blocks (oldest → newest). Capacity is
+   * controlled by `createGasOracle`'s `ringWindowBlocks` option
+   * (default 20n). Producer-local: the relay's `toPublishable` strips
+   * it before publishing snapshots over the wire, since downstream
+   * consumers receiving a serialized snapshot don't need the per-block
+   * sample buffer.
+   *
+   * Maintained by the pure helper in `ring.ts`. Each new block triggers
+   * one of: clean append (with head-trim if the cap would be exceeded),
+   * duplicate (no-op), reorg (trim the diverged tail then append), or
+   * restart (drop everything and start fresh from this block — fires
+   * when the gap exceeds the window or the parent chain isn't
+   * recoverable). The poll loop pre-fetches missing blocks via
+   * `source.getBlock` to bridge clean gaps before reaching the reducer.
    */
   ring: BlockSample[]
+  /**
+   * Most recent reorg observed by the ring lifecycle, or `null` if no
+   * reorg has been seen since this oracle instance started. Persists
+   * across subsequent clean appends — consumers asking "did a reorg
+   * happen on THIS tick?" should compare `lastReorg.blockNumber`
+   * against `state.blockNumber`. Producer-local; safe to ship over
+   * the wire but not load-bearing.
+   */
+  lastReorg: ReorgEvent | null
   /**
    * Live mempool samples used to compute this snapshot's tiers.
    * Producer-local — wire publishers should strip before serializing

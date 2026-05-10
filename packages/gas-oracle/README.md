@@ -164,6 +164,24 @@ lookups without a second RPC roundtrip. Memory cost is the size of one
 `txpool_content` payload (5–15MB on busy ETH mainnet); leave off in
 browser/mobile contexts. Default `false`.
 
+### `ringWindowBlocks`
+
+Maximum number of blocks retained in `state.ring` for percentile
+sampling. Default `20n` (matches the `eth_feeHistory` window). Tier
+recommendations are computed from `ring[*].tips ++ mempoolSamples`,
+so a larger window stabilizes the tier numbers across blocks at the
+cost of more memory (~150 tips/block). Pass `1n` to restore
+single-block-per-tick behavior; pass `0n` to disable the cap (only
+useful for replay harnesses).
+
+The poll loop pre-fetches missing blocks via `source.getBlock(n)` to
+bridge gaps between consecutive ticks (e.g. after `pauseWhenIdle`
+resumes), so the ring stays dense across brief upstream pauses.
+Reorgs trim the ring's diverged tail and surface as
+`state.lastReorg` (a `ReorgEvent | null` describing the trim depth
+and dropped hashes); the new canonical branch refills via natural
+forward polling.
+
 ## Idle-traffic controls (v0.2.6+)
 
 Real dapps run multiple oracles per session (e.g. PulseChain + Base)

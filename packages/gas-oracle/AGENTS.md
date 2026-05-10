@@ -54,8 +54,8 @@ import { withGasOracle } from '@valve-tech/gas-oracle/viem-transport'
 
 | Type | What it is |
 |---|---|
-| `CreateGasOracleOptions` | Constructor config. Required: `client`, `chainId`. Tuneables: `priorityFeeDecayCap`, `priorityModel`, `baseFeeLivenessBlocks`, `poll`, `keepMempoolSnapshot`. |
-| `GasOracleState` | What `oracle.getState()` returns. Holds the four-tier `tiers` map plus latest `baseFee`, `bufferedBaseFee`, mempool snapshot if enabled. |
+| `CreateGasOracleOptions` | Constructor config. Required: `client`, `chainId`. Tuneables: `priorityFeeDecayCap`, `priorityModel`, `baseFeeLivenessBlocks`, `poll`, `keepMempoolSnapshot`, `ringWindowBlocks` (default 20n). |
+| `GasOracleState` | What `oracle.getState()` returns. Holds the four-tier `tiers` map plus latest `baseFee`, `bufferedBaseFee`, mempool snapshot if enabled, the rolling block `ring`, and `lastReorg` (a `ReorgEvent \| null` describing the most recent ring trim, if any). |
 | `TierRecommendation` | Per-tier struct: `{ maxPriorityFeePerGas, maxFeePerGas, gasPrice, maxFeePerBlobGas }`. All `bigint`. |
 | `RawTx` | One mempool entry: `{ hash, from, to, nonce, value, maxPriorityFeePerGas, maxFeePerGas, gas, ... }`. Nullable fields for fields the chain may not expose. |
 | `BlockPositionQuery` | Discriminated union — five mutually-exclusive shapes (see below). |

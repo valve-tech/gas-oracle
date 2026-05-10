@@ -7,8 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- 20-block ring lifecycle for `state.ring`. The single-element
+  placeholder is replaced with a real rolling window: each new block
+  goes through one of `append` / `duplicate` / `reorg` / `restart`,
+  with head-trim when the window cap would be exceeded. The poll
+  loop pre-fetches missing blocks via `source.getBlock(n)` to bridge
+  clean gaps before the reducer runs (one notification, not N).
+- `createGasOracle` option `ringWindowBlocks?: bigint` — controls
+  the ring cap. Default `20n`, matching the `eth_feeHistory` window.
+  Pass `0n` to disable the cap (replay harnesses) or `1n` to restore
+  the v0.10 single-block-per-tick semantics.
+- `GasOracleState.lastReorg: ReorgEvent | null` — populated when the
+  ring lifecycle trims diverged tail blocks. Persists across
+  subsequent clean appends; consumers asking "did a reorg happen on
+  THIS tick?" should compare `lastReorg.blockNumber === blockNumber`.
+- Pure ring helper exported as `incorporateBlock(prevRing, newBlock,
+  maxWindow)` from the package root. Useful for replay harnesses or
+  tests verifying ring transitions independent of the rest of the
+  reducer.
+- `reducePollInputs` accepts an optional `historicalBlocks?:
+  BlockResult[]` (oldest → newest) so callers replaying RPC payloads
+  can fill the ring in one call.
+
 ### Changed
 
+- Tier numbers are now multi-block-stabilized: `state.tiers.*` are
+  computed from `ring[*].tips ++ mempoolSamples`, not just the latest
+  block's tips. This is the user-visible effect of the ring
+  lifecycle — quiet single-block dips no longer collapse the
+  paying-lane tiers (the cap mechanism was previously load-bearing
+  for that case). Behavior change is intentional; consumers wanting
+  the v0.10 semantics can pass `ringWindowBlocks: 1n`.
 - Wire-shape types (`RawTx`, `BlockResult`, `FeeHistoryResult`,
   `TxPoolContent`, `NormalizedMempool`) and the poll-cycle toggle
   (`PollOptions`) are no longer declared locally — they're imported
@@ -18,6 +49,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Type identity now unifies across the toolkit (a `BlockResult`
   from gas-oracle is the same nominal type as one from chain-source).
   No runtime change; no breaking change in consumed shapes.
+
+### Notes
+
+- Reorg-side backfill is intentionally **not** in this change. When a
+  parentHash mismatch is detected, the reducer trims the diverged
+  tail and continues from the new block forward — the new canonical
+  branch refills via natural forward polling rather than a
+  refetch-by-hash walk. (`@valve-tech/chain-source` doesn't expose a
+  by-hash fetch yet; adding one would be a chain-source change in
+  scope for a follow-up if user signal warrants it.)
 
 ## [0.10.1] — 2026-05-08
 

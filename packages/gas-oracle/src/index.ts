@@ -40,6 +40,12 @@ export {
   mempoolToSamples,
 } from './samples.js'
 
+// Pure ring-buffer maintenance (used by the reducer; exposed for
+// replay harnesses + tests that want to verify ring transitions
+// independent of the rest of the reducer).
+export { incorporateBlock } from './ring.js'
+export type { ReorgEvent, RingMutation } from './ring.js'
+
 export {
   fetchOracleInputs,
   fetchHeadBlockNumber,
