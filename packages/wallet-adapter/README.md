@@ -201,13 +201,27 @@ The package is vocabulary, not a connection layer — you bring the
 wallet plumbing. The most universal bridge is **EIP-1193 provider →
 viem `WalletClient` → `WalletAdapter`**, which works for Reown
 (WalletConnect, 200+ wallets), MetaMask SDK, RainbowKit, raw
-`window.ethereum`, and anything else that surfaces an EIP-1193
+`window.ethereum`, hardware wallets in browser context (Ledger
+Live, MetaMask + Ledger, Trezor Suite — they all surface as standard
+EIP-1193 providers), and anything else that surfaces an EIP-1193
 provider.
 
-See [`examples/01-reown-adapter.ts`](./examples/01-reown-adapter.ts)
-for a complete `walletAdapterFromEip1193(...)` helper, including
-chain-mismatch handling (fail-fast vs. `wallet_switchEthereumChain`)
-and a runnable sanity check.
+The `examples/` directory has runnable bridges for the five common
+classes of wallet plumbing — read the comments at the top of each
+to see what it covers and which `npm install` you'd add for the real
+thing:
+
+| Example | Covers | Bridge helper |
+|---|---|---|
+| [`01-reown-adapter.ts`](./examples/01-reown-adapter.ts) | Reown / WalletConnect / MetaMask SDK / RainbowKit / raw `window.ethereum` / hardware wallets in-browser. Universal EIP-1193 path. | `walletAdapterFromEip1193(...)` |
+| [`02-wagmi-adapter.ts`](./examples/02-wagmi-adapter.ts) | wagmi React stack — wraps the `useWalletClient()` viem `WalletClient` directly, skipping the round-trip through EIP-1193. | `walletAdapterFromWalletClient(...)` |
+| [`03-server-relayer.ts`](./examples/03-server-relayer.ts) | Backend code: relayer signing from a private key (env var / KMS). No provider, no chain-switching, hard-fail on cross-chain. Right for sponsored-tx services, indexer write paths, integration tests. | `walletAdapterFromRelayer(...)` |
+| [`04-erc4337-smart-account.ts`](./examples/04-erc4337-smart-account.ts) | ERC-4337 smart accounts via permissionless.js or similar. `adapter.address` is the smart-account address (not the EOA signer). | `walletAdapterFromSmartAccount(...)` |
+| [`05-hardware-wallet-direct.ts`](./examples/05-hardware-wallet-direct.ts) | Hardware wallets attached **directly** via USB/HID (no wallet app in between) — `@ledgerhq/hw-app-eth` for Ledger; the same shape works for Trezor via `@trezor/connect`. For backend code, kiosk apps, dev tooling. | `walletAdapterFromLedger(...)` |
+
+Each example includes a no-network sanity check at the bottom so you
+can run it (`yarn tsx examples/0X-...ts`) without installing any of
+the wallet libraries.
 
 ## Exports
 

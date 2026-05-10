@@ -10,21 +10,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- `examples/01-reown-adapter.ts` — universal EIP-1193 → viem
-  `WalletClient` → `WalletAdapter` bridge. Shows the
-  `walletAdapterFromEip1193(...)` helper with chain-mismatch handling
-  (fail-fast vs. `wallet_switchEthereumChain`). Works with Reown
-  (WalletConnect, 200+ wallets), MetaMask SDK, RainbowKit, raw
-  `window.ethereum`, and anything else surfacing an EIP-1193 provider.
-  Closes the long-standing "how do I make this work with Reown?"
-  docs gap.
-- `typecheck:examples` script wired into the package and the root
-  workspace's `typecheck:examples` so the example is gated by CI.
+- Five worked `examples/` covering the common wallet-plumbing classes
+  — each is runnable end-to-end via a no-network fake transport, and
+  documents the real `npm install` consumers would add to wire it up
+  for production. `typecheck:examples` is wired into the package and
+  the root workspace so all five are gated by CI.
+
+  | Example | Covers | Helper |
+  |---|---|---|
+  | `01-reown-adapter.ts` | Reown / WalletConnect, MetaMask SDK, RainbowKit, raw `window.ethereum`, hardware wallets in-browser (Ledger Live / Trezor Suite). Universal EIP-1193 path. | `walletAdapterFromEip1193(...)` |
+  | `02-wagmi-adapter.ts` | wagmi React stack — wraps `useWalletClient()`'s viem `WalletClient` directly. | `walletAdapterFromWalletClient(...)` |
+  | `03-server-relayer.ts` | Backend signing via private key (env / KMS); hard-fail on cross-chain. | `walletAdapterFromRelayer(...)` |
+  | `04-erc4337-smart-account.ts` | ERC-4337 account abstraction via permissionless.js or similar; `adapter.address` is the smart-account address. | `walletAdapterFromSmartAccount(...)` |
+  | `05-hardware-wallet-direct.ts` | Direct USB/HID-attached Ledger via `@ledgerhq/hw-app-eth` (Trezor via `@trezor/connect` is the same shape). For backend / kiosk / dev tooling. | `walletAdapterFromLedger(...)` |
+
+  Closes the long-standing "how do I make this work with Reown / wagmi
+  / a smart account / a backend signer / a Ledger?" docs gap.
 
 ### Changed
 
 - README "Quick start" gains a "Bridging a real wallet to
-  `WalletAdapter`" subsection pointing at the new example.
+  `WalletAdapter`" subsection pointing at the five examples with a
+  one-line "what each covers" table.
 
 ## [0.10.1] — 2026-05-08
 

@@ -13,6 +13,15 @@
  * (covers 200+ wallet apps via QR connection), so the example uses it
  * by name; the helper at the bottom is provider-agnostic.
  *
+ * **Hardware wallets** (Ledger, Trezor) in a browser/mobile context are
+ * also covered by this bridge — Ledger Live and MetaMask-with-Ledger and
+ * Trezor Suite all surface as standard EIP-1193 providers. The
+ * dapp-side code is identical; the only visible difference is the
+ * wallet takes longer to sign (the user is confirming on a physical
+ * device). For direct USB/HID-attached hardware-wallet signing without
+ * a wallet app in between (e.g. backend code or kiosk apps), see
+ * `05-hardware-wallet-direct.ts`.
+ *
  * Reown plumbing (omitted here so the file typechecks without
  * @reown/appkit installed):
  *
