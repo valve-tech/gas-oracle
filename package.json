@@ -20,7 +20,7 @@
   "scripts": {
     "build": "yarn workspaces foreach --all --topological-dev --exclude @valve-tech/evm-toolkit run build",
     "typecheck": "yarn workspaces foreach --all --exclude @valve-tech/evm-toolkit run typecheck",
-    "typecheck:examples": "yarn workspace @valve-tech/gas-oracle run typecheck:examples",
+    "typecheck:examples": "yarn workspace @valve-tech/gas-oracle run typecheck:examples && yarn workspace @valve-tech/wallet-adapter run typecheck:examples",
     "lint": "yarn workspaces foreach --all --exclude @valve-tech/evm-toolkit run lint",
     "test": "yarn workspaces foreach --all --exclude @valve-tech/evm-toolkit run test",
     "test:coverage": "yarn workspaces foreach --all --exclude @valve-tech/evm-toolkit run test:coverage",

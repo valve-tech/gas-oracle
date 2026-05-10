@@ -6,6 +6,26 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `examples/01-reown-adapter.ts` — universal EIP-1193 → viem
+  `WalletClient` → `WalletAdapter` bridge. Shows the
+  `walletAdapterFromEip1193(...)` helper with chain-mismatch handling
+  (fail-fast vs. `wallet_switchEthereumChain`). Works with Reown
+  (WalletConnect, 200+ wallets), MetaMask SDK, RainbowKit, raw
+  `window.ethereum`, and anything else surfacing an EIP-1193 provider.
+  Closes the long-standing "how do I make this work with Reown?"
+  docs gap.
+- `typecheck:examples` script wired into the package and the root
+  workspace's `typecheck:examples` so the example is gated by CI.
+
+### Changed
+
+- README "Quick start" gains a "Bridging a real wallet to
+  `WalletAdapter`" subsection pointing at the new example.
+
 ## [0.10.1] — 2026-05-08
 
 Synchronized release — no changes to this package. Republished at

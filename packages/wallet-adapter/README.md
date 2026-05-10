@@ -195,6 +195,20 @@ function subtitle(tx: TrackedTx): string {
 }
 ```
 
+### Bridging a real wallet to `WalletAdapter`
+
+The package is vocabulary, not a connection layer — you bring the
+wallet plumbing. The most universal bridge is **EIP-1193 provider →
+viem `WalletClient` → `WalletAdapter`**, which works for Reown
+(WalletConnect, 200+ wallets), MetaMask SDK, RainbowKit, raw
+`window.ethereum`, and anything else that surfaces an EIP-1193
+provider.
+
+See [`examples/01-reown-adapter.ts`](./examples/01-reown-adapter.ts)
+for a complete `walletAdapterFromEip1193(...)` helper, including
+chain-mismatch handling (fail-fast vs. `wallet_switchEthereumChain`)
+and a runnable sanity check.
+
 ## Exports
 
 | Export | Kind | Shape |

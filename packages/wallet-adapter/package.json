@@ -42,6 +42,7 @@
   "scripts": {
     "build": "tsc -p .",
     "typecheck": "tsc -p . --noEmit",
+    "typecheck:examples": "tsc -p examples",
     "lint": "eslint src",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
