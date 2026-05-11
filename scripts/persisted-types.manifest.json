@@ -1,0 +1,67 @@
+{
+  "_comment": "Registered fields on types that cross a serialization boundary (TxTrackerStore, tx-flight-react storage adapters). Adding a new field to a persisted type without a migration / runtime defensive guard is a breaking change for any consumer with prior state on disk — see packages/tx-tracker/CHANGELOG.md v0.11.1 and v0.11.2 entries for the canonical instance. When updating: ALWAYS bump the manifest in the same PR that adds the field, AND either (a) make the field optional, (b) write a migration step in the store, or (c) use typeof / ?? defensive reads at every site. See feedback_persisted_type_evolution.md in project memory.",
+  "version": 1,
+  "types": [
+    {
+      "name": "TxStatus",
+      "package": "@valve-tech/tx-tracker",
+      "declarationFile": "packages/tx-tracker/src/events.ts",
+      "fields": [
+        "hash",
+        "chainId",
+        "lastSeenInBlock",
+        "lastSeenInMempool",
+        "replacedBy",
+        "vanishedAt",
+        "unseenStreak",
+        "firstObservedAtBlock",
+        "lastObservedAtBlock",
+        "terminalAtBlockNumber",
+        "capabilities"
+      ]
+    },
+    {
+      "name": "TrackedTxRecord",
+      "package": "@valve-tech/tx-tracker",
+      "declarationFile": "packages/tx-tracker/src/store.ts",
+      "fields": [
+        "chainId",
+        "hash",
+        "status",
+        "firstSeenBlockNumber",
+        "lastObservedBlockNumber",
+        "retentionExpiresAtBlockNumber",
+        "subscriptions"
+      ]
+    },
+    {
+      "name": "PersistedSubscription",
+      "package": "@valve-tech/tx-tracker",
+      "declarationFile": "packages/tx-tracker/src/store.ts",
+      "fields": [
+        "id",
+        "durable",
+        "selector"
+      ]
+    },
+    {
+      "name": "TrackedTx",
+      "package": "@valve-tech/wallet-adapter",
+      "declarationFile": "packages/wallet-adapter/src/tx-status.ts",
+      "fields": [
+        "id",
+        "hash",
+        "chainId",
+        "flow",
+        "submittedAt",
+        "confirmedAt",
+        "submittedGas",
+        "submittedTier",
+        "status",
+        "replacedBy",
+        "replaces",
+        "notes"
+      ]
+    }
+  ]
+}

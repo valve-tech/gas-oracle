@@ -24,8 +24,9 @@
     "lint": "yarn workspaces foreach --all --exclude @valve-tech/evm-toolkit run lint",
     "test": "yarn workspaces foreach --all --exclude @valve-tech/evm-toolkit run test",
     "test:coverage": "yarn workspaces foreach --all --exclude @valve-tech/evm-toolkit run test:coverage",
-    "verify:clean": "rm -rf packages/*/dist packages/*/tsconfig.tsbuildinfo && yarn build && yarn lint && yarn typecheck && yarn typecheck:examples && yarn test",
+    "verify:clean": "rm -rf packages/*/dist packages/*/tsconfig.tsbuildinfo && yarn build && yarn lint && yarn typecheck && yarn typecheck:examples && yarn test && yarn verify:persisted-types",
     "verify:release-coverage": "node scripts/verify-release-coverage.mjs",
+    "verify:persisted-types": "node scripts/verify-persisted-types.mjs",
     "prepare": "git config core.hooksPath .githooks 2>/dev/null || true"
   },
   "devDependencies": {

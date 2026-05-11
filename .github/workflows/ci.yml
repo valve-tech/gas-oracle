@@ -65,3 +65,12 @@ jobs:
       # the OIDC release workflow ran green and silently skipped it.
       - name: Verify release coverage
         run: yarn verify:release-coverage
+
+      # Catches the v0.11.0 -> v0.11.1 class of bug: a new field added
+      # to a type that crosses a serialization boundary (TxTrackerStore,
+      # tx-flight-react storage) without runtime defensive reads,
+      # migration step, or optional declaration. The manifest in
+      # scripts/persisted-types.manifest.json forces the maintainer
+      # to acknowledge each field addition and consider safety.
+      - name: Verify persisted-type manifest
+        run: yarn verify:persisted-types
