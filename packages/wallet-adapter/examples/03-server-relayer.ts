@@ -106,85 +106,92 @@ export const walletAdapterFromRelayer = (
 /* -------------------------------------------------------------------------- */
 /*  Sanity check (no network)                                                 */
 /* -------------------------------------------------------------------------- */
+/*  Gated on the file being executed directly via tsx — see the runDemo      */
+/*  pattern in 01-reown-adapter.ts. Tests can import                         */
+/*  `walletAdapterFromRelayer` above without the demo running.               */
 
-// Throwaway test key — same value viem uses in examples. NEVER use
-// for any real chain.
-const TEST_KEY = ('0x' + 'a'.repeat(64)) as Hex
-const account = privateKeyToAccount(TEST_KEY)
+const runDemo = async (): Promise<void> => {
+  // Throwaway test key — same value viem uses in examples. NEVER use
+  // for any real chain.
+  const TEST_KEY = ('0x' + 'a'.repeat(64)) as Hex
+  const account = privateKeyToAccount(TEST_KEY)
 
-// Build a fake-transport relayer adapter for the sanity check. Real
-// usage would call `walletAdapterFromRelayer({ privateKey, rpcUrl,
-// chainId })` and pass through to a real RPC; here we substitute
-// `custom(...)` with canned responses so the example self-validates
-// without network access.
-const fakeWallet: WalletClient = createWalletClient({
-  account,
-  chain: mainnet,
-  transport: custom({
-    request: async ({ method }: { method: string }) => {
-      if (method === 'eth_chainId') return '0x1'
-      if (method === 'eth_getTransactionCount') return '0x0'
-      if (method === 'eth_estimateGas') return '0x5208'
-      if (method === 'eth_gasPrice') return '0x77359400'
-      if (method === 'eth_maxPriorityFeePerGas') return '0x3b9aca00'
-      if (method === 'eth_blockNumber') return '0x1'
-      if (method === 'eth_getBlockByNumber') {
-        return {
-          number: '0x1',
-          baseFeePerGas: '0x77359400',
-          timestamp: '0x0',
-          hash: '0x' + '0'.repeat(64),
-          parentHash: '0x' + '0'.repeat(64),
-          gasLimit: '0x1c9c380',
-          gasUsed: '0x0',
+  const fakeWallet: WalletClient = createWalletClient({
+    account,
+    chain: mainnet,
+    transport: custom({
+      request: async ({ method }: { method: string }) => {
+        if (method === 'eth_chainId') return '0x1'
+        if (method === 'eth_getTransactionCount') return '0x0'
+        if (method === 'eth_estimateGas') return '0x5208'
+        if (method === 'eth_gasPrice') return '0x77359400'
+        if (method === 'eth_maxPriorityFeePerGas') return '0x3b9aca00'
+        if (method === 'eth_blockNumber') return '0x1'
+        if (method === 'eth_getBlockByNumber') {
+          return {
+            number: '0x1',
+            baseFeePerGas: '0x77359400',
+            timestamp: '0x0',
+            hash: '0x' + '0'.repeat(64),
+            parentHash: '0x' + '0'.repeat(64),
+            gasLimit: '0x1c9c380',
+            gasUsed: '0x0',
+          }
         }
+        if (method === 'eth_sendRawTransaction') return '0xc0ffee'.padEnd(66, '0')
+        if (method === 'eth_sendTransaction') return '0xc0ffee'.padEnd(66, '0')
+        throw new Error(`fake relayer: unexpected method ${method}`)
+      },
+    }),
+  })
+
+  const fakeAdapter: WalletAdapter = {
+    address: account.address,
+    sendTransaction: async (req) => {
+      if (req.chainId !== 1) {
+        throw new Error(
+          `Relayer is bound to chain 1; got request for chain ${req.chainId}.`,
+        )
       }
-      if (method === 'eth_sendRawTransaction') return '0xc0ffee'.padEnd(66, '0')
-      if (method === 'eth_sendTransaction') return '0xc0ffee'.padEnd(66, '0')
-      throw new Error(`fake relayer: unexpected method ${method}`)
+      return fakeWallet.sendTransaction({
+        account,
+        to: req.to,
+        data: req.data,
+        value: req.value ?? 0n,
+        chain: null,
+        maxFeePerGas: req.maxFeePerGas,
+        maxPriorityFeePerGas: req.maxPriorityFeePerGas,
+      })
     },
-  }),
-})
+  }
 
-const fakeAdapter: WalletAdapter = {
-  address: account.address,
-  sendTransaction: async (req) => {
-    if (req.chainId !== 1) {
-      throw new Error(
-        `Relayer is bound to chain 1; got request for chain ${req.chainId}.`,
-      )
-    }
-    return fakeWallet.sendTransaction({
-      account,
-      to: req.to,
-      data: req.data,
-      value: req.value ?? 0n,
-      chain: null,
-      maxFeePerGas: req.maxFeePerGas,
-      maxPriorityFeePerGas: req.maxPriorityFeePerGas,
-    })
-  },
-}
-
-const hash = await fakeAdapter.sendTransaction({
-  to: ('0x' + 'b'.repeat(40)) as Hex,
-  data: '0x',
-  value: 0n,
-  chainId: 1,
-})
-
-// Confirm cross-chain hard-fail wires through:
-let crossChainError: unknown = null
-try {
-  await fakeAdapter.sendTransaction({
+  const hash = await fakeAdapter.sendTransaction({
     to: ('0x' + 'b'.repeat(40)) as Hex,
     data: '0x',
     value: 0n,
-    chainId: 137, // wrong chain
+    chainId: 1,
   })
-} catch (err) {
-  crossChainError = err
+
+  let crossChainError: unknown = null
+  try {
+    await fakeAdapter.sendTransaction({
+      to: ('0x' + 'b'.repeat(40)) as Hex,
+      data: '0x',
+      value: 0n,
+      chainId: 137,
+    })
+  } catch (err) {
+    crossChainError = err
+  }
+
+  console.log('Sanity check: relayer adapter returned hash', hash)
+  console.log('Sanity check: cross-chain rejected with:', (crossChainError as Error).message)
 }
 
-console.log('Sanity check: relayer adapter returned hash', hash)
-console.log('Sanity check: cross-chain rejected with:', (crossChainError as Error).message)
+if (
+  typeof process !== 'undefined' &&
+  typeof import.meta.filename === 'string' &&
+  import.meta.filename === process.argv[1]
+) {
+  await runDemo()
+}

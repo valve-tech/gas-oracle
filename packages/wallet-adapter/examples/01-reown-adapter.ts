@@ -148,26 +148,41 @@ export const walletAdapterFromEip1193 = (
 /* -------------------------------------------------------------------------- */
 /*  Sanity check (no network — fakes the EIP-1193 provider)                   */
 /* -------------------------------------------------------------------------- */
+/*  The sanity check is wrapped in `runDemo` and gated on the file being     */
+/*  executed directly (via `yarn tsx examples/01-reown-adapter.ts`). When     */
+/*  the file is *imported* by a test or by another module, the gate          */
+/*  evaluates to false and the demo doesn't run — the export of              */
+/*  `walletAdapterFromEip1193` above is still available.                     */
 
-const fakeProvider: EIP1193Provider = {
-  request: async ({ method }: { method: string }) => {
-    if (method === 'eth_chainId') return '0x1' // mainnet
-    if (method === 'eth_sendTransaction') return '0xdeadbeef'.padEnd(66, '0')
-    if (method === 'eth_accounts') return ['0x' + 'a'.repeat(40)]
-    throw new Error(`fake provider: unexpected method ${method}`)
-  },
-} as unknown as EIP1193Provider
+const runDemo = async (): Promise<void> => {
+  const fakeProvider: EIP1193Provider = {
+    request: async ({ method }: { method: string }) => {
+      if (method === 'eth_chainId') return '0x1' // mainnet
+      if (method === 'eth_sendTransaction') return '0xdeadbeef'.padEnd(66, '0')
+      if (method === 'eth_accounts') return ['0x' + 'a'.repeat(40)]
+      throw new Error(`fake provider: unexpected method ${method}`)
+    },
+  } as unknown as EIP1193Provider
 
-const adapter = walletAdapterFromEip1193({
-  provider: fakeProvider,
-  account: ('0x' + 'a'.repeat(40)) as Hex,
-})
+  const adapter = walletAdapterFromEip1193({
+    provider: fakeProvider,
+    account: ('0x' + 'a'.repeat(40)) as Hex,
+  })
 
-const hash = await adapter.sendTransaction({
-  to: ('0x' + 'b'.repeat(40)) as Hex,
-  data: '0x',
-  value: 1n,
-  chainId: 1,
-})
+  const hash = await adapter.sendTransaction({
+    to: ('0x' + 'b'.repeat(40)) as Hex,
+    data: '0x',
+    value: 1n,
+    chainId: 1,
+  })
 
-console.log('Sanity check: adapter returned hash', hash)
+  console.log('Sanity check: adapter returned hash', hash)
+}
+
+if (
+  typeof process !== 'undefined' &&
+  typeof import.meta.filename === 'string' &&
+  import.meta.filename === process.argv[1]
+) {
+  await runDemo()
+}

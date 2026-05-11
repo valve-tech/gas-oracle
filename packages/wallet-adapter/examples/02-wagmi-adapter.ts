@@ -96,38 +96,45 @@ export const walletAdapterFromWalletClient = (
 /* -------------------------------------------------------------------------- */
 /*  Sanity check (no network)                                                 */
 /* -------------------------------------------------------------------------- */
+/*  Gated on direct script execution — tests import                          */
+/*  `walletAdapterFromWalletClient` without triggering the demo.             */
 
-const account = ('0x' + 'a'.repeat(40)) as Hex
+const runDemo = async (): Promise<void> => {
+  const account = ('0x' + 'a'.repeat(40)) as Hex
 
-// Build a fake EIP-1193-shaped transport via viem's `custom`. Returns
-// canned values for the methods viem's WalletClient invokes during a
-// sendTransaction (chainId probe, account discovery, gas estimation,
-// and the send itself) — enough surface to exercise the bridge
-// end-to-end without a real RPC.
-const fakeWalletClient: WalletClient = createWalletClient({
-  account,
-  chain: mainnet,
-  transport: custom({
-    request: async ({ method }: { method: string }) => {
-      if (method === 'eth_chainId') return '0x1'
-      if (method === 'eth_accounts') return [account]
-      if (method === 'eth_getTransactionCount') return '0x0'
-      if (method === 'eth_estimateGas') return '0x5208'
-      if (method === 'eth_gasPrice') return '0x77359400'
-      if (method === 'eth_maxPriorityFeePerGas') return '0x3b9aca00'
-      if (method === 'eth_sendTransaction') return '0xfeedface'.padEnd(66, '0')
-      throw new Error(`fake walletClient: unexpected method ${method}`)
-    },
-  }),
-})
+  const fakeWalletClient: WalletClient = createWalletClient({
+    account,
+    chain: mainnet,
+    transport: custom({
+      request: async ({ method }: { method: string }) => {
+        if (method === 'eth_chainId') return '0x1'
+        if (method === 'eth_accounts') return [account]
+        if (method === 'eth_getTransactionCount') return '0x0'
+        if (method === 'eth_estimateGas') return '0x5208'
+        if (method === 'eth_gasPrice') return '0x77359400'
+        if (method === 'eth_maxPriorityFeePerGas') return '0x3b9aca00'
+        if (method === 'eth_sendTransaction') return '0xfeedface'.padEnd(66, '0')
+        throw new Error(`fake walletClient: unexpected method ${method}`)
+      },
+    }),
+  })
 
-const adapter = walletAdapterFromWalletClient(fakeWalletClient, account)
+  const adapter = walletAdapterFromWalletClient(fakeWalletClient, account)
 
-const hash = await adapter.sendTransaction({
-  to: ('0x' + 'b'.repeat(40)) as Hex,
-  data: '0x',
-  value: 0n,
-  chainId: 1,
-})
+  const hash = await adapter.sendTransaction({
+    to: ('0x' + 'b'.repeat(40)) as Hex,
+    data: '0x',
+    value: 0n,
+    chainId: 1,
+  })
 
-console.log('Sanity check: wagmi-style adapter returned hash', hash)
+  console.log('Sanity check: wagmi-style adapter returned hash', hash)
+}
+
+if (
+  typeof process !== 'undefined' &&
+  typeof import.meta.filename === 'string' &&
+  import.meta.filename === process.argv[1]
+) {
+  await runDemo()
+}

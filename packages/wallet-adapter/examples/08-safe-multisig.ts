@@ -155,54 +155,66 @@ export const walletAdapterFromSafe = (
 /* -------------------------------------------------------------------------- */
 /*  Sanity check (no network, no signer)                                      */
 /* -------------------------------------------------------------------------- */
+/*  Gated on direct script execution — tests import                          */
+/*  `walletAdapterFromSafe` without triggering the demo.                     */
 
-const SAFE_ADDRESS = ('0x' + 's'.repeat(40)) as Hex
-const SIGNER_ADDRESS = ('0x' + 'a'.repeat(40)) as Hex
-const FAKE_SAFE_TX_HASH = ('0x' + 'f'.repeat(64)) as Hex
+const runDemo = async (): Promise<void> => {
+  const SAFE_ADDRESS = ('0x' + 's'.repeat(40)) as Hex
+  const SIGNER_ADDRESS = ('0x' + 'a'.repeat(40)) as Hex
+  const FAKE_SAFE_TX_HASH = ('0x' + 'f'.repeat(64)) as Hex
 
-const fakeProtocolKit: MinimalSafeProtocolKit = {
-  createTransaction: async ({ transactions }) => ({
-    data: { ...transactions[0], nonce: 0 },
-  }),
-  getTransactionHash: async () => FAKE_SAFE_TX_HASH,
-  signHash: async () => ({ data: '0xsig' }),
-}
+  const fakeProtocolKit: MinimalSafeProtocolKit = {
+    createTransaction: async ({ transactions }) => ({
+      data: { ...transactions[0], nonce: 0 },
+    }),
+    getTransactionHash: async () => FAKE_SAFE_TX_HASH,
+    signHash: async () => ({ data: '0xsig' }),
+  }
 
-let proposed = false
-const fakeApiKit: MinimalSafeApiKit = {
-  proposeTransaction: async () => {
-    proposed = true
-  },
-}
+  let proposed = false
+  const fakeApiKit: MinimalSafeApiKit = {
+    proposeTransaction: async () => {
+      proposed = true
+    },
+  }
 
-const adapter = walletAdapterFromSafe({
-  protocolKit: fakeProtocolKit,
-  apiKit: fakeApiKit,
-  safeAddress: SAFE_ADDRESS,
-  signerAddress: SIGNER_ADDRESS,
-  chainId: 1,
-})
+  const adapter = walletAdapterFromSafe({
+    protocolKit: fakeProtocolKit,
+    apiKit: fakeApiKit,
+    safeAddress: SAFE_ADDRESS,
+    signerAddress: SIGNER_ADDRESS,
+    chainId: 1,
+  })
 
-const safeTxHash = await adapter.sendTransaction({
-  to: ('0x' + 'b'.repeat(40)) as Hex,
-  data: '0x',
-  value: 0n,
-  chainId: 1,
-})
-
-console.log('Sanity check: Safe adapter returned safeTxHash:', safeTxHash)
-console.log('Sanity check: proposal submitted to API kit:', proposed)
-console.log('Sanity check: adapter.address is the Safe, not the signer:', adapter.address)
-
-let crossChainError: unknown = null
-try {
-  await adapter.sendTransaction({
+  const safeTxHash = await adapter.sendTransaction({
     to: ('0x' + 'b'.repeat(40)) as Hex,
     data: '0x',
     value: 0n,
-    chainId: 137,
+    chainId: 1,
   })
-} catch (err) {
-  crossChainError = err
+
+  console.log('Sanity check: Safe adapter returned safeTxHash:', safeTxHash)
+  console.log('Sanity check: proposal submitted to API kit:', proposed)
+  console.log('Sanity check: adapter.address is the Safe, not the signer:', adapter.address)
+
+  let crossChainError: unknown = null
+  try {
+    await adapter.sendTransaction({
+      to: ('0x' + 'b'.repeat(40)) as Hex,
+      data: '0x',
+      value: 0n,
+      chainId: 137,
+    })
+  } catch (err) {
+    crossChainError = err
+  }
+  console.log('Sanity check: cross-chain rejected with:', (crossChainError as Error).message)
 }
-console.log('Sanity check: cross-chain rejected with:', (crossChainError as Error).message)
+
+if (
+  typeof process !== 'undefined' &&
+  typeof import.meta.filename === 'string' &&
+  import.meta.filename === process.argv[1]
+) {
+  await runDemo()
+}

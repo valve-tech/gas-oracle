@@ -117,39 +117,51 @@ export const walletAdapterFromEthersSigner = (
 /* -------------------------------------------------------------------------- */
 /*  Sanity check (no network)                                                 */
 /* -------------------------------------------------------------------------- */
+/*  Gated on the file being executed directly via tsx — see the runDemo      */
+/*  pattern in 01-reown-adapter.ts. Tests import                             */
+/*  `walletAdapterFromEthersSigner` without the demo running.                */
 
-const FAKE_ADDRESS = ('0x' + 'a'.repeat(40)) as Hex
-const FAKE_TX_HASH = ('0x' + 'e'.repeat(64)) as Hex
+const runDemo = async (): Promise<void> => {
+  const FAKE_ADDRESS = ('0x' + 'a'.repeat(40)) as Hex
+  const FAKE_TX_HASH = ('0x' + 'e'.repeat(64)) as Hex
 
-const fakeSigner: MinimalEthersSigner = {
-  getAddress: async () => FAKE_ADDRESS,
-  sendTransaction: async () => ({ hash: FAKE_TX_HASH }),
-  provider: {
-    getNetwork: async () => ({ chainId: 1n }),
-  },
-}
+  const fakeSigner: MinimalEthersSigner = {
+    getAddress: async () => FAKE_ADDRESS,
+    sendTransaction: async () => ({ hash: FAKE_TX_HASH }),
+    provider: {
+      getNetwork: async () => ({ chainId: 1n }),
+    },
+  }
 
-const adapter = walletAdapterFromEthersSigner(fakeSigner, FAKE_ADDRESS)
+  const adapter = walletAdapterFromEthersSigner(fakeSigner, FAKE_ADDRESS)
 
-const hash = await adapter.sendTransaction({
-  to: ('0x' + 'b'.repeat(40)) as Hex,
-  data: '0x',
-  value: 0n,
-  chainId: 1,
-})
-
-console.log('Sanity check: ethers adapter returned hash', hash)
-
-// Cross-chain hard-fail.
-let crossChainError: unknown = null
-try {
-  await adapter.sendTransaction({
+  const hash = await adapter.sendTransaction({
     to: ('0x' + 'b'.repeat(40)) as Hex,
     data: '0x',
     value: 0n,
-    chainId: 137,
+    chainId: 1,
   })
-} catch (err) {
-  crossChainError = err
+
+  console.log('Sanity check: ethers adapter returned hash', hash)
+
+  let crossChainError: unknown = null
+  try {
+    await adapter.sendTransaction({
+      to: ('0x' + 'b'.repeat(40)) as Hex,
+      data: '0x',
+      value: 0n,
+      chainId: 137,
+    })
+  } catch (err) {
+    crossChainError = err
+  }
+  console.log('Sanity check: cross-chain rejected with:', (crossChainError as Error).message)
 }
-console.log('Sanity check: cross-chain rejected with:', (crossChainError as Error).message)
+
+if (
+  typeof process !== 'undefined' &&
+  typeof import.meta.filename === 'string' &&
+  import.meta.filename === process.argv[1]
+) {
+  await runDemo()
+}
