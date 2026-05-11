@@ -532,26 +532,79 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
    * still leaves the new block as the new tip, and the reducer's pure
    * helper handles incomplete ancestry by restarting if necessary.
    *
-   * Reorgs (parentHash mismatch with `prev.tip.hash`) are NOT
-   * backfilled here — that would require fetching by hash, which
-   * `chain-source` doesn't expose. The reducer's trim handles them
-   * correctly; the new canonical branch refills via natural forward
-   * polling.
+   * Reorgs (parentHash mismatch at the tip OR deeper) are handled
+   * via a `getBlockByHash` walk-back from `newBlock.parentHash`,
+   * looking for a hash already in the ring (common ancestor). The
+   * walk is bounded by `ringWindowBlocks` so deep reorgs degrade
+   * gracefully (the reducer's `restart` arm catches an exhausted
+   * walk).
    */
   const bridgeGap = async (newBlock: BlockResult): Promise<BlockResult[]> => {
     if (state === null || state.ring.length === 0) return []
+    // BlockResult.parentHash is optional (some test fixtures omit it);
+    // without it we can't do any chain walking, so skip the bridge.
+    const newParentHash = newBlock.parentHash
+    if (newParentHash === undefined) return []
+    const ringHashes = new Set(state.ring.map((b) => b.hash))
+    // Clean append — no bridge needed.
+    if (ringHashes.has(newParentHash)) return []
+
     const tip = state.ring[state.ring.length - 1]
     const newNumber = BigInt(newBlock.number)
     const gap = newNumber - tip.number
-    if (gap <= 1n) return []
-    if (ringWindowBlocks > 0n && gap > ringWindowBlocks) return []
+
+    // Case 1: clean gap (number-bridged). Most common case; sequential
+    // by-number fetches are cheap and the assembled chain typically
+    // connects. We verify the connection before returning — if it
+    // doesn't, we fall through to the by-hash walk-back (the reorg
+    // path) rather than returning a disconnected list that would
+    // make the reducer restart.
+    if (gap > 1n && (ringWindowBlocks === 0n || gap <= ringWindowBlocks)) {
+      const missing: BlockResult[] = []
+      for (let n = tip.number + 1n; n < newNumber; n += 1n) {
+        const fetched = await source.getBlock(n)
+        if (!fetched) break
+        missing.push(fetched)
+      }
+      // Connection check: full coverage, first parent in ring, last
+      // hash matches newBlock.parentHash. If yes, this is a true
+      // clean gap and we're done.
+      const expected = Number(gap - 1n)
+      const firstParent = missing[0]?.parentHash
+      if (
+        missing.length === expected &&
+        firstParent !== undefined &&
+        ringHashes.has(firstParent) &&
+        missing[missing.length - 1].hash === newParentHash
+      ) {
+        return missing
+      }
+      // Otherwise: a reorg lurks under the gap. Discard and walk
+      // back by hash instead — by-number couldn't have known to
+      // follow the reorged branch.
+    }
+
+    // Case 2: reorg-side backfill via getBlockByHash. Walk back
+    // from newBlock.parentHash until we hit a hash already in the
+    // ring (common ancestor) or exhaust the window budget. The
+    // resulting `missing` list is the new canonical branch from the
+    // common ancestor (exclusive) up to newBlock (exclusive); the
+    // reducer's incorporateBlock handles the ring trim at the
+    // divergence point and populates lastReorg.
     const missing: BlockResult[] = []
-    for (let n = tip.number + 1n; n < newNumber; n += 1n) {
-      const fetched = await source.getBlock(n)
+    const maxDepth =
+      ringWindowBlocks > 0n ? Number(ringWindowBlocks) : Number.MAX_SAFE_INTEGER
+    let parentHashCursor: string = newParentHash
+    for (let depth = 0; depth < maxDepth; depth += 1) {
+      const fetched = await source.getBlockByHash(parentHashCursor)
       if (!fetched) break
       missing.push(fetched)
+      const nextParent = fetched.parentHash
+      if (nextParent === undefined) break
+      if (ringHashes.has(nextParent)) break
+      parentHashCursor = nextParent
     }
-    return missing
+    return missing.reverse()
   }
 
   // Block-event handler. Fires once per de-duped block emit from the
