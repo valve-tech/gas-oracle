@@ -6,6 +6,41 @@ this file. Per-package details live in each `packages/*/CHANGELOG.md`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.11.2] — 2026-05-11
+
+Posture-consistency follow-up to v0.11.1. After the v0.11.0 crash
+shipped (and was fixed in v0.11.1), we re-ran an upgrade-hazard
+review across all persistence-touching code in `@valve-tech/tx-tracker`
+and `@valve-tech/tx-flight-react`. The review surfaced two
+additional strict-null read sites in tx-tracker that are
+structurally identical to the v0.11.1 root cause:
+
+- `tracker.ts:834` — stale-block guard's `recordedSince !== null`
+  on `TxStatus.lastObservedAtBlock`.
+- `observations.ts:274` — unseen-streak gate's
+  `firstObservedAtBlock === null`, plus the `unseenStreak + 1`
+  arithmetic below it.
+
+**These are not crashing on any current consumer's data** — the
+fields have been on `TxStatus` since v0.3.x, so no live persisted
+record has them missing. The fix tightens both sites to defensive
+shape checks (`typeof === 'bigint'` and `== null` + `?? 0`) so the
+hazard class is closed across the entire package, not just the
+v0.11.1 site. Same posture, consistent application.
+
+Also adds a `makeLegacyTxStatus(overrides, omit)` test helper that
+codifies the "legacy-fixture" pattern: the v0.11.1 regression test
+and the two new v0.11.2 tests all use it. Future audits of persisted
+types should reach for this primitive to write at least one
+legacy-shape test per added field.
+
+- **tx-tracker**: substantive fix. See package CHANGELOG.
+- **chain-source**, **gas-oracle**, **viem-errors**, **wallet-adapter**,
+  **tx-flight-react**, **trueblocks-sdk**: synced no-op republish.
+
+Coverage stays at 100/100/100/100 across all 7 packages. 1066 tests
+in total (was 1063; +3 legacy-fixture tests).
+
 ## [0.11.1] — 2026-05-11
 
 Patch release. Fixes a v0.11.0 upgrade-path crash in

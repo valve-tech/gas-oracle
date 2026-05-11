@@ -6,6 +6,44 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.11.2] — 2026-05-11
+
+### Fixed
+
+- **Posture-consistency follow-up to v0.11.1.** Two additional
+  strict-null read sites on persisted `TxStatus` fields were
+  structurally identical to the v0.11.0 crash hazard, but on fields
+  that have been present since v0.3.x — so not triggerable on any
+  current consumer's data, but the same shape would silently fail
+  if a future schema migration ever dropped or renamed the field.
+  Both sites tightened to defensive shape checks for consistency
+  with v0.11.1's posture:
+  - `tracker.ts:834` — stale-block guard now uses
+    `typeof recordedSince === 'bigint'` (was `recordedSince !== null`).
+    Without the fix, an absent `lastObservedAtBlock` would coerce
+    `undefined > blockNumber` to `false` and silently defang the
+    concurrency guard.
+  - `observations.ts:274` — unseen-for-N-blocks gate now uses
+    `firstObservedAtBlock == null` (loose; was `=== null`).
+    Companion `unseenStreak` arithmetic at line 282 wraps the read
+    in `?? 0` so legacy data with `unseenStreak` undefined doesn't
+    write `NaN` into the patched record.
+- Surfaced by an upgrade-hazard re-review of the persistence-touching
+  code paths after the v0.11.1 incident. Both fixes are defensive,
+  not bug-for-current-data — no consumer migration required.
+
+### Added
+
+- `makeLegacyTxStatus(overrides?, omit?)` test helper in
+  `tracker.test.ts`. Builds a `TxStatus` shape with arbitrary
+  fields omitted, simulating records persisted by earlier toolkit
+  versions. Carries a JSDoc explaining the wire-shape evolution
+  discipline and pointing at the
+  `feedback_persisted_type_evolution.md` lessons-learned note.
+  The v0.11.1 regression test and the two new v0.11.2
+  posture-consistency tests both consume it; future tests of
+  persisted-type evolution should reach for this primitive first.
+
 ## [0.11.1] — 2026-05-11
 
 ### Fixed

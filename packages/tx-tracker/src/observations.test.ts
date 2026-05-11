@@ -307,6 +307,73 @@ test('block: replacement does NOT re-fire replaced-by when status already record
   })
 })
 
+test('block: unseen-streak handles undefined firstObservedAtBlock and unseenStreak on a legacy-shaped record (v0.11.2 posture-consistency)', () => {
+  // Same hazard class as the v0.11.1 fix: strict `=== null` on a
+  // persisted-type field would silently fail if the field were
+  // ever undefined. firstObservedAtBlock + unseenStreak have been
+  // on TxStatus since v0.3.x so no live consumer is affected, but
+  // the defensive shape is now consistent across all the read
+  // sites that touch persisted fields.
+  const legacyStatusWithoutObservation = {
+    hash: '0xveryold',
+    chainId: 1,
+    lastSeenInBlock: null,
+    lastSeenInMempool: null,
+    replacedBy: null,
+    vanishedAt: null,
+    capabilities: CAPS,
+    // firstObservedAtBlock, lastObservedAtBlock, unseenStreak,
+    // terminalAtBlockNumber all omitted — pre-v0.3.x-style record.
+  } as unknown as TxStatus
+  const record: ReadonlyTrackedRecord = {
+    hash: '0xveryold',
+    status: legacyStatusWithoutObservation,
+    identity: null,
+    inLastMempoolSnapshot: false,
+    unseenThresholdBlocks: 30,
+  }
+  // Block contains no matching tx; Path 4 (truly unseen) would fire
+  // if firstObservedAtBlock were set.
+  const result = decideBlockObservation(
+    blockInput({ record, txs: [] }),
+  )
+  // firstObservedAtBlock missing → EMPTY_RESULT, no streak bump.
+  expect(result.events).toEqual([])
+  expect(result.statusPatch).toEqual({})
+})
+
+test('block: unseen-streak survives undefined unseenStreak when firstObservedAtBlock is set (v0.11.2 posture-consistency)', () => {
+  // Same fixture but with firstObservedAtBlock set — exercises the
+  // `?? 0` defense in `nextStreak = (record.status.unseenStreak ?? 0) + 1`.
+  // Without the defense, undefined + 1 === NaN and the patch would
+  // write `unseenStreak: NaN` permanently.
+  const legacyStatusWithObservation = {
+    hash: '0xveryold',
+    chainId: 1,
+    lastSeenInBlock: null,
+    lastSeenInMempool: null,
+    replacedBy: null,
+    vanishedAt: null,
+    firstObservedAtBlock: 50n,
+    lastObservedAtBlock: 50n,
+    capabilities: CAPS,
+    // unseenStreak + terminalAtBlockNumber omitted
+  } as unknown as TxStatus
+  const record: ReadonlyTrackedRecord = {
+    hash: '0xveryold',
+    status: legacyStatusWithObservation,
+    identity: null,
+    inLastMempoolSnapshot: false,
+    unseenThresholdBlocks: 30,
+  }
+  const result = decideBlockObservation(
+    blockInput({ record, txs: [] }),
+  )
+  // nextStreak === (undefined ?? 0) + 1 === 1 (not NaN).
+  expect(result.statusPatch.unseenStreak).toBe(1)
+  expect(Number.isNaN(result.statusPatch.unseenStreak as number)).toBe(false)
+})
+
 test('mempool: replacement on a legacy record (no terminalAtBlockNumber field) backfills the anchor (v0.11.1 regression)', () => {
   // Companion to the tracker.ts regression: when a record is
   // rehydrated from a ≤0.10 store, its `terminalAtBlockNumber` is

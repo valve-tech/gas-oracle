@@ -831,8 +831,14 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
       // (block N), skip applying our stale statusPatch. The async pre-fetch
       // for withReceipts opened this interleave window — without this guard
       // we'd clobber the newer state with older data.
+      //
+      // `typeof === 'bigint'` (defensive against legacy persisted records
+      // that might lack the field): `lastObservedAtBlock` has been on
+      // TxStatus since v0.3.x so no current consumer is affected, but the
+      // strict-null pattern that crashed in v0.11.0 lives here too. This
+      // is posture-consistency with the retention-guard fix in v0.11.1.
       const recordedSince = record.status.lastObservedAtBlock
-      if (recordedSince !== null && recordedSince > blockNumber) {
+      if (typeof recordedSince === 'bigint' && recordedSince > blockNumber) {
         continue
       }
       const result = decideBlockObservation({

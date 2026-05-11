@@ -270,12 +270,19 @@ export const decideBlockObservation = (
   }
 
   // Path 4: truly unseen — only counts when there's a prior
-  // observation to count from.
-  if (record.status.firstObservedAtBlock === null) {
+  // observation to count from. `== null` (loose) covers both null
+  // and a missing field on a legacy persisted record (same posture
+  // as the v0.11.1 audit fixes elsewhere in this file).
+  if (record.status.firstObservedAtBlock == null) {
     return EMPTY_RESULT
   }
 
-  const nextStreak = record.status.unseenStreak + 1
+  // `?? 0` defends against legacy data where `unseenStreak` could
+  // be undefined; without it, `undefined + 1 === NaN` and the patch
+  // below would write `unseenStreak: NaN` permanently. Field has
+  // been present since v0.3.x so no live trigger today, but the
+  // hazard class is the same as the v0.11.1 root cause.
+  const nextStreak = (record.status.unseenStreak ?? 0) + 1
   const reachedTerminal = nextStreak === record.unseenThresholdBlocks
   const events: TxEvent[] = reachedTerminal
     ? [

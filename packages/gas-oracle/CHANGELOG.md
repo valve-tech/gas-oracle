@@ -5,6 +5,17 @@ All notable changes to `@valve-tech/gas-oracle` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.11.2] — 2026-05-11
+
+### Notes
+
+- Synchronized release — no changes to this package. Republished at
+  0.11.2 alongside the rest of the toolkit; the substantive fix is
+  in `@valve-tech/tx-tracker` (posture-consistency follow-up to
+  v0.11.1 — two additional strict-null read sites on persisted
+  `TxStatus` fields tightened defensively). See
+  `@valve-tech/tx-tracker`'s CHANGELOG for details.
+
 ## [0.11.1] — 2026-05-11
 
 ### Notes

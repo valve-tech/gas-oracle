@@ -166,6 +166,57 @@ const collect = (
   return { events, unsub }
 }
 
+// -------------- legacy-shape fixtures --------------
+
+/**
+ * Build a `TxStatus`-shaped object that's missing one or more
+ * fields the current type declares — simulates a record persisted
+ * by an earlier toolkit version that didn't yet have those fields.
+ *
+ * Why this exists: TxStatus is a wire-shape (it crosses the
+ * `TxTrackerStore` serialization boundary). Adding a new
+ * non-optional field is a breaking change for any consumer with
+ * prior state on disk — TypeScript says the field is present,
+ * runtime says it's `undefined`. The v0.11.0 → v0.11.1 patch was
+ * the canonical instance. See `feedback_persisted_type_evolution.md`
+ * in project memory.
+ *
+ * Usage discipline: when adding a non-optional field to TxStatus
+ * (or any other persisted type), write at least one test that
+ * stuffs a legacy-shape record into the store and exercises the
+ * read paths against it. The cast through `unknown` is the
+ * "this is wire data, not in-memory data" signal.
+ *
+ * @param omit field names that pre-v0.11 records would not have
+ */
+const makeLegacyTxStatus = (
+  overrides: Partial<import('./events.js').TxStatus> = {},
+  omit: (keyof import('./events.js').TxStatus)[] = [],
+): import('./events.js').TxStatus => {
+  const base: Record<string, unknown> = {
+    hash: '0xlegacy',
+    chainId: 1,
+    lastSeenInBlock: null,
+    lastSeenInMempool: null,
+    replacedBy: null,
+    vanishedAt: null,
+    unseenStreak: 0,
+    firstObservedAtBlock: null,
+    lastObservedAtBlock: null,
+    terminalAtBlockNumber: null, // present here; remove via `omit` for ≤0.10 fixtures
+    capabilities: {
+      newHeads: 'subscription',
+      newPendingTransactions: 'poll-only',
+      txpoolContent: 'available',
+      receiptByHash: 'available',
+      reprobeOnReconnect: true,
+    },
+    ...overrides,
+  }
+  for (const field of omit) delete base[field as string]
+  return base as unknown as import('./events.js').TxStatus
+}
+
 // -------------- tests --------------
 
 test('subscribe emits a synthetic started event by default', () => {
@@ -682,32 +733,14 @@ test('retention check does not throw on rehydrated legacy record lacking termina
   // after upgrade. Fixed by replacing the strict-null check with
   // `typeof t === 'bigint'`.
   const store = createInMemoryStore()
-  // Hand-build a record in the legacy ≤0.10 shape — no
-  // `terminalAtBlockNumber` field present. Cast through unknown to
-  // bypass the post-v0.11 type which has the field as non-optional.
-  const legacyStatusWithoutTerminal = {
-    hash: '0xlegacy',
-    chainId: 1,
-    lastSeenInBlock: null,
-    lastSeenInMempool: null,
-    replacedBy: null,
-    vanishedAt: null,
-    unseenStreak: 0,
-    firstObservedAtBlock: null,
-    lastObservedAtBlock: null,
-    capabilities: {
-      newHeads: 'subscription',
-      newPendingTransactions: 'poll-only',
-      txpoolContent: 'available',
-      receiptByHash: 'available',
-      reprobeOnReconnect: true,
-    },
-    // terminalAtBlockNumber intentionally omitted
-  } as unknown as import('./events.js').TxStatus
+  // Use the shared legacy-fixture helper — `omit: ['terminalAtBlockNumber']`
+  // simulates a record persisted by v0.10.x (before that field existed).
+  // See makeLegacyTxStatus's JSDoc for the wire-shape evolution
+  // discipline this test locks in.
   await store.put({
     chainId: 1,
     hash: '0xlegacy',
-    status: legacyStatusWithoutTerminal,
+    status: makeLegacyTxStatus({}, ['terminalAtBlockNumber']),
     firstSeenBlockNumber: 0n,
     lastObservedBlockNumber: 0n,
     retentionExpiresAtBlockNumber: 64n,
@@ -731,6 +764,46 @@ test('retention check does not throw on rehydrated legacy record lacking termina
   }).not.toThrow()
   // No silent error routed to onError either — the retention check
   // is now defensive, not exception-catching.
+  expect(onError).not.toHaveBeenCalled()
+  tracker.stop()
+})
+
+test('stale-block guard treats undefined lastObservedAtBlock as "no prior recorded position" (v0.11.2 posture-consistency)', async () => {
+  // Companion to the v0.11.1 fix: tracker.ts's stale-block guard at
+  // the per-record observation loop also used strict `!== null` on
+  // a persisted-type field. Field has been present since v0.3.x so
+  // no live consumer is affected, but the hazard class is identical
+  // — a future migration that ever drops the field would silently
+  // defang the guard (undefined > blockNumber → false coercion).
+  // The fix uses typeof === 'bigint' for posture-consistency.
+  const store = createInMemoryStore()
+  // Legacy fixture: omit BOTH terminalAtBlockNumber (the v0.11.1
+  // case) AND lastObservedAtBlock (this test's case) to model a
+  // very old persisted record.
+  await store.put({
+    chainId: 1,
+    hash: '0xveryold',
+    status: makeLegacyTxStatus({ firstObservedAtBlock: 50n }, [
+      'terminalAtBlockNumber',
+      'lastObservedAtBlock',
+    ]),
+    firstSeenBlockNumber: 50n,
+    lastObservedBlockNumber: 50n,
+    retentionExpiresAtBlockNumber: 114n,
+    subscriptions: [
+      { id: 'sub-1', kind: 'hash', hash: '0xveryold', durable: true },
+    ],
+  })
+  const onError = vi.fn()
+  const source = makeSource()
+  const tracker = createTxTracker({ source, chainId: 1, store, onError })
+  tracker.start()
+  await tracker.ready()
+  // Drive a block — must not throw, must not silently bypass the
+  // observation loop.
+  expect(() => {
+    source.emitBlock(makeBlock(100n, '0xb100', []))
+  }).not.toThrow()
   expect(onError).not.toHaveBeenCalled()
   tracker.stop()
 })
