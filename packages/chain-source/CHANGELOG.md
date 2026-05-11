@@ -6,6 +6,23 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] — 2026-05-11
+
+### Added
+
+- `ChainSource.getBlockByHash(hash)` — on-demand fetch of a block by
+  its hash. Companion to `getBlock(tag)`, but returns the block at
+  the hash even if it's no longer canonical. Required for any
+  consumer that walks a reorged-away branch via parentHash chains
+  (`@valve-tech/gas-oracle`'s reorg-side backfill in v0.12.0 uses
+  it). `safeRequest`-shaped — returns `null` on transport error or
+  if the upstream no longer carries the hash (deep reorg, pruned
+  archive).
+- `fetchBlockByHash(client, hash, onError?)` — top-level transport
+  helper for direct use (mirrors `fetchBlock`). Exported from the
+  package root for replay harnesses and tests that bypass the
+  full source.
+
 ## [0.11.2] — 2026-05-11
 
 ### Notes

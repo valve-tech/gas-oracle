@@ -5,6 +5,33 @@ All notable changes to `@valve-tech/gas-oracle` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] — 2026-05-11
+
+### Added
+
+- **Reorg-side backfill in the ring lifecycle.** Closes the only
+  known gap from the v0.11.0 ring shipping: when `handleBlock`
+  detects a parentHash mismatch (or a clean by-number bridge that
+  doesn't connect to the ring), it now walks back from
+  `newBlock.parentHash` via `source.getBlockByHash` to find the
+  common ancestor, then feeds the walked-back chain to the reducer
+  as `historicalBlocks`. The reducer's `incorporateBlock` handles
+  the ring trim at the divergence point and populates `lastReorg`
+  with accurate `depth` + `droppedHashes`. Bounded by
+  `ringWindowBlocks` — deep reorgs degrade gracefully via the
+  reducer's restart arm.
+
+Concretely:
+- Old behavior (v0.11.x): tip reorg → ring restarts to
+  `[newBlock]`, all prior samples lost; `lastReorg` not populated.
+- New behavior (v0.12.0): tip reorg → ring trims diverged tail and
+  extends with the new canonical chain back to the common ancestor;
+  `lastReorg` captures the full depth.
+
+Requires `@valve-tech/chain-source@^0.12.0` (which adds
+`getBlockByHash`). The synced release line guarantees consumers
+get matching versions.
+
 ## [0.11.2] — 2026-05-11
 
 ### Notes

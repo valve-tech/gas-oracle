@@ -6,6 +6,16 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] — 2026-05-11
+
+### Notes
+
+- Synchronized release — no consumer-visible changes to this
+  package's published surface. Bumped in lockstep alongside the
+  v0.12.0 feature work in `@valve-tech/chain-source` (new
+  `getBlockByHash` API) and `@valve-tech/gas-oracle` (reorg-side
+  ring-lifecycle backfill that uses it).
+
 ## [0.11.2] — 2026-05-11
 
 ### Fixed

@@ -6,6 +6,63 @@ this file. Per-package details live in each `packages/*/CHANGELOG.md`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] — 2026-05-11
+
+Feature release. Five pieces of work shipped together, all
+additive — no breaking changes for existing consumers.
+
+**`@valve-tech/chain-source`** — adds `getBlockByHash(hash)` to
+the `ChainSource` interface (and the underlying `fetchBlockByHash`
+transport helper). Returns the block at a specific hash even when
+that hash is no longer canonical — required for any consumer that
+walks a reorged-away branch via parentHash chains.
+
+**`@valve-tech/gas-oracle`** — reorg-side backfill in the ring
+lifecycle. Closes the only known gap from v0.11.0: when
+`handleBlock` detects a parentHash mismatch with the ring tip, it
+now walks back from `newBlock.parentHash` via
+`source.getBlockByHash` to find the common ancestor, then feeds
+the walked-back chain to the reducer as `historicalBlocks`. The
+reducer trims the diverged tail and populates `lastReorg` with
+accurate `depth` + `droppedHashes`. Bounded by `ringWindowBlocks`
+so deep reorgs degrade via the reducer's restart arm.
+
+**Toolkit-wide** — new `verify:persisted-types` CI check codifies
+the wire-shape-evolution discipline that emerged from the v0.11.x
+incident. `scripts/persisted-types.manifest.json` is a checked-in
+snapshot of the fields on every persisted type
+(`TxStatus`, `TrackedTxRecord`, `PersistedSubscription`,
+`TrackedTx`); the script parses the source interfaces and fails CI
+on any drift. Forces the maintainer to acknowledge each field
+addition and consider safety (optional? defensive read? migration?)
+before the change can land. Wired into `verify:clean` + the CI
+workflow.
+
+**`@valve-tech/tx-flight-react`** — adds a `makeLegacyTrackedTx`
+test fixture + two legacy-shape round-trip tests that lock in the
+wire-shape evolution discipline for `TrackedTx` persistence.
+Mirrors the `makeLegacyTxStatus` helper from tx-tracker (v0.11.2).
+No production code change.
+
+**`@valve-tech/wallet-adapter`** — three more bridge examples
+(now 8 total), covering ethers v6 (`Signer` bridge for
+dapps still on ethers), Privy embedded wallets (CAIP-2 chain
+encoding + lazy provider fetching), and Safe (Gnosis Safe)
+multisig (returns a `safeTxHash`, not an on-chain tx hash —
+file header documents the consumer-visible implications). Each
+runs end-to-end via the no-network sanity-check pattern.
+
+- **chain-source**: `getBlockByHash` API.
+- **gas-oracle**: ring lifecycle reorg-side backfill (uses
+  `getBlockByHash`).
+- **wallet-adapter**: 3 more examples (ethers, Privy, Safe).
+- **tx-tracker**, **tx-flight-react**, **viem-errors**,
+  **trueblocks-sdk**: synced no-op (tx-flight-react also gains
+  test-only `makeLegacyTrackedTx` helper).
+
+Coverage stays at 100/100/100/100 across all 7 packages. 1078
+tests total. New CI step: `verify:persisted-types`.
+
 ## [0.11.2] — 2026-05-11
 
 Posture-consistency follow-up to v0.11.1. After the v0.11.0 crash

@@ -6,6 +6,26 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] — 2026-05-11
+
+### Added
+
+- Three more `examples/` covering wallet-plumbing classes the
+  original five didn't reach (now 8 total):
+
+  | Example | Covers | Helper |
+  |---|---|---|
+  | `06-ethers-adapter.ts` | ethers v6 `Signer` (`BrowserProvider.getSigner()` or `Wallet`). For dapps still on ethers or mid-migration to viem. | `walletAdapterFromEthersSigner(...)` |
+  | `07-privy-embedded.ts` | Privy embedded wallets via `@privy-io/react-auth`'s `useWallets()`. Handles CAIP-2 chain encoding (`eip155:<id>`) and lazy provider fetching across wallet swaps. | `walletAdapterFromPrivyWallet(...)` |
+  | `08-safe-multisig.ts` | Safe (Gnosis Safe) multisig via `@safe-global/protocol-kit` + `@safe-global/api-kit`. **Returns a safeTxHash, not an on-chain tx hash** — UIs have to fork to await the executed hash separately. File header documents the consumer-visible implications. | `walletAdapterFromSafe(...)` |
+
+  Each follows the existing example shape (inline SDK type-stubs +
+  no-network sanity check) so the files typecheck and run without
+  any wallet libraries installed.
+
+- README "Bridging a real wallet to `WalletAdapter`" table extended
+  from 5 to 8 rows.
+
 ## [0.11.2] — 2026-05-11
 
 ### Notes
