@@ -74,3 +74,84 @@ jobs:
       # to acknowledge each field addition and consider safety.
       - name: Verify persisted-type manifest
         run: yarn verify:persisted-types
+
+  # Browser + anvil-backed integration tests for @valve-tech/wallet-adapter
+  # (5 of the 8 worked bridge examples). Runs in parallel with the
+  # `test` job above. Required for the overall CI run to pass.
+  #
+  # External deps that this job installs:
+  #   - foundry (anvil), via the foundry-rs/foundry-toolchain action
+  #   - Playwright Chromium, cached on ~/.cache/ms-playwright
+  #
+  # Cold runs: ~3 min wall-clock (foundry install + Playwright
+  # download dominate). Cached runs: ~30s wall-clock.
+  integration:
+    name: browser + integration tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      # Build so wallet-adapter has its dist/ (the example files
+      # import from `../src/index.js` which TypeScript resolves
+      # against the workspace's source-or-dist, but `yarn test:browser`
+      # bundles everything through Vite — building first keeps the
+      # shape consistent with how `yarn verify:clean` runs locally).
+      - name: Build
+        run: yarn build
+
+      # Anvil is the local-chain backbone for `yarn test:integration`
+      # (server-relayer + ethers bridges sign real txs against it)
+      # and for `yarn test:browser`'s anvil-backed test files
+      # (EIP-1193 + wagmi bridges talk to anvil over HTTP from
+      # the browser context).
+      - name: Install foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      # Cache the Playwright browser binaries — ~100MB download
+      # otherwise. Cache key uses the installed @playwright/test
+      # version so a Playwright bump invalidates automatically.
+      - name: Resolve Playwright version
+        id: playwright-version
+        run: |
+          version=$(node -p "require('./node_modules/playwright/package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+      - name: Install Playwright Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+
+      # System libraries that Chromium needs at runtime — only
+      # installed when the binary cache missed (the --with-deps flag
+      # above handles this on a fresh install). For a cache hit we
+      # still need the libs in case the runner image rotated.
+      - name: Install Playwright system deps
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      - name: Run browser tests
+        run: yarn test:browser
+
+      - name: Run integration tests
+        run: yarn test:integration
