@@ -36,6 +36,7 @@ export { probeCapabilities } from './capabilities.js'
 export {
   safeRequest,
   fetchBlock,
+  fetchBlockByHash,
   fetchHeadBlockNumber,
   fetchFeeHistory,
   fetchTxPool,

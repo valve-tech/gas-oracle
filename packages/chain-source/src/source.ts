@@ -53,6 +53,7 @@ import { normalizeMempool } from './mempool.js'
 import { Subscriptions } from './subscriptions.js'
 import {
   fetchBlock,
+  fetchBlockByHash,
   fetchFeeHistory,
   fetchHeadBlockNumber,
   fetchReceipt,
@@ -142,6 +143,15 @@ export interface ChainSource {
   subscribeMempool: (cb: (snapshot: NormalizedMempool) => void) => () => void
   /** On-demand: fetch a single block (full transactions). */
   getBlock: (tag: 'latest' | bigint) => Promise<BlockResult | null>
+  /**
+   * On-demand: fetch a block by its hash (full transactions). Used by
+   * consumers that need to walk a reorged-away branch — `getBlock`
+   * by number returns whatever block is now canonical at that height,
+   * which is the wrong answer when the goal is "the block that was
+   * once at this hash." Returns `null` on transport error or if the
+   * upstream no longer carries the hash (deep reorg, pruned archive).
+   */
+  getBlockByHash: (hash: string) => Promise<BlockResult | null>
   /** On-demand: fee history. */
   getFeeHistory: (
     blockCount: number,
@@ -480,6 +490,9 @@ export const createChainSource = (
 
     getBlock: (tag) =>
       fetchBlock(options.client, tag, errSink('eth_getBlockByNumber')),
+
+    getBlockByHash: (hash) =>
+      fetchBlockByHash(options.client, hash, errSink('eth_getBlockByHash')),
 
     getFeeHistory: (blockCount, percentiles) =>
       fetchFeeHistory(

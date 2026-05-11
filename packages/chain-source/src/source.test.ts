@@ -515,6 +515,33 @@ test('getBlock encodes a bigint block tag as hex', async () => {
   })
 })
 
+test('getBlockByHash calls eth_getBlockByHash with the hash + full-tx flag', async () => {
+  const block = sampleBlock('0x42')
+  const { client, calls } = fakeClient({
+    responses: { eth_getBlockByHash: () => block },
+  })
+  const source = createChainSource({ client })
+
+  const result = await source.getBlockByHash('0xabc')
+
+  expect(result).toBe(block)
+  expect(calls).toContainEqual({
+    method: 'eth_getBlockByHash',
+    params: ['0xabc', true],
+  })
+})
+
+test('getBlockByHash returns null when the upstream is missing the hash (deep reorg)', async () => {
+  const { client } = fakeClient({
+    responses: { eth_getBlockByHash: () => null },
+  })
+  const source = createChainSource({ client })
+
+  const result = await source.getBlockByHash('0xgone')
+
+  expect(result).toBeNull()
+})
+
 test('getFeeHistory passes blockCount + percentiles', async () => {
   const fixture: FeeHistoryResult = {
     baseFeePerGas: ['0x1'],

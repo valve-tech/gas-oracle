@@ -110,6 +110,31 @@ export const fetchBlock = async (
   )
 
 /**
+ * Fetch a block by its hash (full transactions). Companion to
+ * `fetchBlock(tag)` — the by-hash variant is needed when walking
+ * a reorged-away branch (`parentHash` → `parentHash`) past blocks
+ * that have been replaced at their canonical heights. `eth_get-
+ * BlockByHash` returns the block at the hash even if it's no
+ * longer canonical; the by-number lookup at the same height would
+ * instead return whatever canonical block lives there now, which
+ * is the wrong answer for ring backfill.
+ *
+ * Returns `null` on RPC failure (transport error, gated method,
+ * not-found). `safeRequest`-shaped — never throws.
+ */
+export const fetchBlockByHash = async (
+  client: PublicClient,
+  hash: string,
+  onError?: (err: unknown) => void,
+): Promise<BlockResult | null> =>
+  safeRequest<BlockResult>(
+    client,
+    'eth_getBlockByHash',
+    [hash, true],
+    onError,
+  )
+
+/**
  * Fetch fee history. `blockCount` is hex-encoded per the spec; the
  * latest block is the implicit upper bound. `percentiles` is passed
  * through unchanged (RPC accepts a JSON number array).

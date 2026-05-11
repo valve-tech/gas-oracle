@@ -5,6 +5,7 @@ import {
   safeRequest,
   fetchHeadBlockNumber,
   fetchBlock,
+  fetchBlockByHash,
   fetchFeeHistory,
   fetchTxPool,
   fetchReceipt,
@@ -111,6 +112,41 @@ test('fetchBlock returns null when the upstream throws', async () => {
   const result = await fetchBlock(client, 'latest', onError)
   expect(result).toBeNull()
   expect(onError).toHaveBeenCalledTimes(1)
+})
+
+test('fetchBlockByHash calls eth_getBlockByHash with full transactions', async () => {
+  const fixture: BlockResult = {
+    number: '0x10',
+    hash: '0xdeadbeef',
+    parentHash: '0xparent',
+    timestamp: '0x1',
+    baseFeePerGas: '0x0',
+    gasLimit: '0x0',
+    gasUsed: '0x0',
+    transactions: [],
+  }
+  const { client, calls } = stubClient(() => fixture)
+  const result = await fetchBlockByHash(client, '0xdeadbeef')
+  expect(result).toEqual(fixture)
+  expect(calls).toEqual([
+    { method: 'eth_getBlockByHash', params: ['0xdeadbeef', true] },
+  ])
+})
+
+test('fetchBlockByHash returns null when the upstream throws', async () => {
+  const { client } = stubClient(() => {
+    throw new Error('not found')
+  })
+  const onError = vi.fn()
+  const result = await fetchBlockByHash(client, '0xnope', onError)
+  expect(result).toBeNull()
+  expect(onError).toHaveBeenCalledTimes(1)
+})
+
+test('fetchBlockByHash returns null when the upstream returns null (deep reorg / pruned archive)', async () => {
+  const { client } = stubClient(() => null)
+  const result = await fetchBlockByHash(client, '0xgone')
+  expect(result).toBeNull()
 })
 
 test('fetchFeeHistory passes blockCount and percentiles correctly', async () => {
