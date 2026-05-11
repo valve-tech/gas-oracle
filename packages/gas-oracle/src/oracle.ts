@@ -488,15 +488,24 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
 
   const ringWindowBlocks = options.ringWindowBlocks ?? DEFAULT_RING_WINDOW_BLOCKS
 
-  // Reduce a (block, feeHistory, mempool) tuple into the next state +
-  // notify. Shared between the subscribe-driven path (timer ticks) and
-  // the on-demand path (`pollOnce`). `historicalBlocks` carries any
-  // gap-bridge blocks fetched by `handleBlock` so the ring fills in
-  // chronological order in a single reducer call (one notification).
+  /**
+   * Reduce a (block, feeHistory, mempool) tuple into the next state +
+   * notify. Shared between the subscribe-driven path (timer ticks)
+   * and the on-demand path (`pollOnce`). `historicalBlocks` carries
+   * any gap-bridge blocks fetched by `handleBlock` so the ring fills
+   * in chronological order in a single reducer call (one notification).
+   *
+   * The `block` field on `inputs` is **required non-null** here —
+   * both callers (`handleBlock` and `pollOnce`) already gate on a
+   * non-null block, so the pure reducer's null-block-early-return
+   * arm cannot fire from this path. Typing the parameter
+   * accordingly removes the dead `if (next)` guard and the
+   * `c8 ignore` directive that was needed to silence coverage.
+   */
   const reduceAndPublish = (
-    inputs: OraclePollInputs,
+    inputs: OraclePollInputs & { block: BlockResult },
     historicalBlocks?: BlockResult[],
-  ): GasOracleState | null => {
+  ): GasOracleState => {
     const next = reducePollInputs({
       inputs,
       historicalBlocks,
@@ -506,16 +515,9 @@ export const createGasOracle = (options: CreateGasOracleOptions): GasOracle => {
       priorityModel: options.priorityModel,
       baseFeeLivenessBlocks: options.baseFeeLivenessBlocks,
       ringWindowBlocks,
-    })
-    // `next` is null only when the input block is null, but every
-    // caller of reduceAndPublish (handleBlock, pollOnce) already
-    // gates on a non-null block. Guard kept defensively in case a
-    // future caller wires it differently.
-    /* c8 ignore next */
-    if (next) {
-      state = next
-      notify(next)
-    }
+    }) as GasOracleState
+    state = next
+    notify(next)
     return next
   }
 

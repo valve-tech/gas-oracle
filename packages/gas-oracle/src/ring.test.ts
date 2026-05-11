@@ -101,6 +101,28 @@ describe('incorporateBlock', () => {
     })
   })
 
+  it('appends after a deeper match when newBlock fills a gap in the ring', () => {
+    // Ring carries a gap (block 102 missing). New block has number 102,
+    // parentHash matching the entry at number 101. matchIndex points
+    // to the 101 entry (last entry <= 102), matched.number < newBlock.number,
+    // matched.hash === parentHash, AND matchIndex is NOT the tip — so
+    // we hit the "stale tail trim + append" branch (ring.ts:171-184).
+    const ring = [
+      block({ number: 100n, hash: '0xa', parentHash: '0xprev' }),
+      block({ number: 101n, hash: '0xb', parentHash: '0xa' }),
+      block({ number: 103n, hash: '0xd', parentHash: '0xc-stale' }),
+    ]
+    const filler = block({ number: 102n, hash: '0xc', parentHash: '0xb' })
+    const result = incorporateBlock(ring, filler, 20n)
+    expect(result.ring.map((b) => b.hash)).toEqual(['0xa', '0xb', '0xc'])
+    expect(result.reorg).toEqual({
+      blockNumber: 102n,
+      depth: 1n,
+      newTipHash: '0xc',
+      droppedHashes: ['0xd'],
+    })
+  })
+
   it('appends after a deeper match when newBlock extends from a non-tip ancestor', () => {
     const ring = [
       block({ number: 100n, hash: '0xa', parentHash: '0xprev' }),

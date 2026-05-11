@@ -59,6 +59,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   refetch-by-hash walk. (`@valve-tech/chain-source` doesn't expose a
   by-hash fetch yet; adding one would be a chain-source change in
   scope for a follow-up if user signal warrants it.)
+- `reduceAndPublish` was refactored to take `inputs.block: BlockResult`
+  (non-null) — the previous defensive `if (next)` guard plus
+  `/* c8 ignore */` directive were silencing coverage on a path
+  unreachable from either caller (`handleBlock` and `pollOnce` both
+  gate on non-null block). No behavior change; the dead branch is
+  gone. Closes the workspace-wide 100% coverage goal alongside new
+  tests for the gap-bridge logic in `handleBlock`/`pollOnce` and
+  the deeper-ancestor branch in `ring.ts`.
 
 ## [0.10.1] — 2026-05-08
 

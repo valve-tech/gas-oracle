@@ -475,6 +475,51 @@ describe('reducePollInputs', () => {
     expect(s5.ring.map((b) => b.hash)).toEqual(['0xa', '0xb', '0xc', '0xd', '0xe'])
   })
 
+  it('captures a reorg signal when a historicalBlock triggers a same-height ring trim (coverage)', () => {
+    // Seed prev with ring=[block-100 hash=0xa, block-101 hash=0xb-orig].
+    const s0 = reducePollInputs({
+      inputs: (() => {
+        const i = blockOnly()
+        i.block!.number = '0x1234'
+        i.block!.hash = '0xa'
+        return i
+      })(),
+      chainId: 1,
+      prev: null,
+    })!
+    const i1 = blockOnly()
+    i1.block!.number = '0x1235'
+    i1.block!.parentHash = '0xa'
+    i1.block!.hash = '0xb-orig'
+    const s1 = reducePollInputs({ inputs: i1, chainId: 1, prev: s0 })!
+    expect(s1.ring.map((b) => b.hash)).toEqual(['0xa', '0xb-orig'])
+
+    // Now feed a historicalBlock at the same height as 0xb-orig but
+    // with a different hash — exercises the histMutation.reorg path
+    // (reducePollInputs's for-of-historicalBlocks loop, branch 295).
+    const histReorgBlock = blockOnly().block!
+    histReorgBlock.number = '0x1235'
+    histReorgBlock.parentHash = '0xa'
+    histReorgBlock.hash = '0xb-FORK'
+    const currentBlock = blockOnly().block!
+    currentBlock.number = '0x1236'
+    currentBlock.parentHash = '0xb-FORK'
+    currentBlock.hash = '0xc'
+    const s2 = reducePollInputs({
+      inputs: { feeHistory: null, block: currentBlock, txPool: null },
+      historicalBlocks: [histReorgBlock],
+      chainId: 1,
+      prev: s1,
+    })!
+    expect(s2.lastReorg).toEqual({
+      blockNumber: 0x1235n,
+      depth: 1n,
+      newTipHash: '0xb-FORK',
+      droppedHashes: ['0xb-orig'],
+    })
+    expect(s2.ring.map((b) => b.hash)).toEqual(['0xa', '0xb-FORK', '0xc'])
+  })
+
   it('restarts the ring when a new block arrives with an unrecoverable gap', () => {
     const s1 = reducePollInputs({
       inputs: (() => {
@@ -1855,6 +1900,152 @@ describe('keepMempoolSnapshot', () => {
     const snapshot = oracle.getMempoolSnapshot()
     expect(snapshot).not.toBeNull()
     expect(snapshot!.pending['0xs']!['1']!.hash).toBe('0xt1')
+    oracle.stop()
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  Ring lifecycle — I/O-driven gap bridging (oracle.ts handleBlock / pollOnce) */
+/* -------------------------------------------------------------------------- */
+
+const blockAt = (number: bigint, parentHash: string, hash: string): BlockResult => ({
+  number: '0x' + number.toString(16),
+  hash,
+  parentHash,
+  timestamp: '0x660a0000',
+  baseFeePerGas: hex(baseFeeGwei),
+  gasLimit: '0x1c9c380',
+  gasUsed: '0xe4e1c0',
+  transactions: [],
+})
+
+describe('createGasOracle — gap bridging (handleBlock / pollOnce)', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
+
+  it('bridges a clean multi-block gap by fetching missing blocks via source.getBlock', async () => {
+    // Build a fake source where getBlock(n) returns a synthetic block
+    // for any requested number. Seed state via a first emit at block
+    // 100, then emit block 103 — the handler should fetch blocks 101
+    // and 102 via getBlock and slot them into the ring before the
+    // current block's observation lands.
+    const blockSubs = new Set<(b: BlockResult) => void>()
+    const fetchedNumbers: bigint[] = []
+    const source: ChainSource = {
+      start: () => {},
+      stop: () => {},
+      pollOnce: async () => undefined,
+      ready: async () => undefined,
+      subscribeBlocks: (cb) => { blockSubs.add(cb); return () => blockSubs.delete(cb) },
+      subscribeMempool: () => () => {},
+      getBlock: async (tag) => {
+        if (tag === 'latest') return null
+        fetchedNumbers.push(tag)
+        // Build a coherent chain where block N's parent is block N-1's
+        // expected hash ('0xb<N-1>'). Required so bridgeGap-fetched
+        // blocks slot cleanly into the ring rather than triggering a
+        // restart on parentHash mismatch.
+        return blockAt(tag, '0xb' + (tag - 1n), '0xb' + tag)
+      },
+      getFeeHistory: async () => null,
+      getMempoolSnapshot: async () => null,
+      getReceipt: async () => null,
+      getTransaction: async () => null,
+      capabilities: () => ({
+        newHeads: 'unavailable', newPendingTransactions: 'unavailable',
+        txpoolContent: 'gated', receiptByHash: 'unavailable', reprobeOnReconnect: false,
+      }),
+    }
+    const oracle = createGasOracle({ source, chainId: 1, pauseWhenIdle: false })
+    oracle.subscribe(() => {})
+    oracle.start()
+    // Seed at block 100. parentHash arbitrary since ring is empty.
+    blockSubs.forEach((cb) => cb(blockAt(100n, '0xprev', '0xb100')))
+    await flush()
+    expect(oracle.getState()?.blockNumber).toBe(100n)
+    expect(oracle.getState()?.ring).toHaveLength(1)
+    // Skip ahead to block 103 — handler should bridge 101 + 102.
+    blockSubs.forEach((cb) => cb(blockAt(103n, '0xb102', '0xb103')))
+    await flush()
+    expect(fetchedNumbers).toEqual([101n, 102n])
+    expect(oracle.getState()?.ring.map((b) => Number(b.number))).toEqual(
+      [100, 101, 102, 103],
+    )
+    oracle.stop()
+  })
+
+  it('does not bridge gaps larger than ringWindowBlocks (would restart)', async () => {
+    const fetchedNumbers: bigint[] = []
+    const blockSubs = new Set<(b: BlockResult) => void>()
+    const source: ChainSource = {
+      start: () => {}, stop: () => {}, pollOnce: async () => undefined, ready: async () => undefined,
+      subscribeBlocks: (cb) => { blockSubs.add(cb); return () => blockSubs.delete(cb) },
+      subscribeMempool: () => () => {},
+      getBlock: async (tag) => {
+        if (tag === 'latest') return null
+        fetchedNumbers.push(tag)
+        return blockAt(tag, '0xparent', '0xb' + tag)
+      },
+      getFeeHistory: async () => null,
+      getMempoolSnapshot: async () => null,
+      getReceipt: async () => null,
+      getTransaction: async () => null,
+      capabilities: () => ({
+        newHeads: 'unavailable', newPendingTransactions: 'unavailable',
+        txpoolContent: 'gated', receiptByHash: 'unavailable', reprobeOnReconnect: false,
+      }),
+    }
+    const oracle = createGasOracle({
+      source, chainId: 1, pauseWhenIdle: false, ringWindowBlocks: 3n,
+    })
+    oracle.subscribe(() => {})
+    oracle.start()
+    blockSubs.forEach((cb) => cb(blockAt(100n, '0xprev', '0xb100')))
+    await flush()
+    // Gap of 10 blocks exceeds ringWindowBlocks=3 → no bridge attempt.
+    blockSubs.forEach((cb) => cb(blockAt(110n, '0xfar', '0xb110')))
+    await flush()
+    expect(fetchedNumbers).toEqual([]) // skipped the bridge
+    expect(oracle.getState()?.ring).toHaveLength(1)
+    expect(oracle.getState()?.ring[0].hash).toBe('0xb110')
+    oracle.stop()
+  })
+
+  it('stops bridging on the first null getBlock and proceeds with the partial fill', async () => {
+    const blockSubs = new Set<(b: BlockResult) => void>()
+    const source: ChainSource = {
+      start: () => {}, stop: () => {}, pollOnce: async () => undefined, ready: async () => undefined,
+      subscribeBlocks: (cb) => { blockSubs.add(cb); return () => blockSubs.delete(cb) },
+      subscribeMempool: () => () => {},
+      getBlock: async (tag) => {
+        if (tag === 'latest') return null
+        // Block 101 fetches OK, block 102 fails (RPC hiccup).
+        if (tag === 101n) return blockAt(101n, '0xb100', '0xb101')
+        return null
+      },
+      getFeeHistory: async () => null,
+      getMempoolSnapshot: async () => null,
+      getReceipt: async () => null,
+      getTransaction: async () => null,
+      capabilities: () => ({
+        newHeads: 'unavailable', newPendingTransactions: 'unavailable',
+        txpoolContent: 'gated', receiptByHash: 'unavailable', reprobeOnReconnect: false,
+      }),
+    }
+    const oracle = createGasOracle({ source, chainId: 1, pauseWhenIdle: false })
+    oracle.subscribe(() => {})
+    oracle.start()
+    blockSubs.forEach((cb) => cb(blockAt(100n, '0xprev', '0xb100')))
+    await flush()
+    // Block 103: bridge tries 101 (OK), 102 (null → stop). Then
+    // the reducer sees historicalBlocks=[block101], plus block103.
+    // Block101 extends 100 cleanly; block103 has parentHash=0xb102
+    // (NOT in ring) → restart with [block103].
+    blockSubs.forEach((cb) => cb(blockAt(103n, '0xb102', '0xb103')))
+    await flush()
+    // Ring ends up just [block103] because block103's parent isn't
+    // in the partially-bridged ring.
+    expect(oracle.getState()?.ring.map((b) => b.hash)).toEqual(['0xb103'])
     oracle.stop()
   })
 })
