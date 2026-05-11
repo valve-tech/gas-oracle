@@ -218,6 +218,9 @@ thing:
 | [`03-server-relayer.ts`](./examples/03-server-relayer.ts) | Backend code: relayer signing from a private key (env var / KMS). No provider, no chain-switching, hard-fail on cross-chain. Right for sponsored-tx services, indexer write paths, integration tests. | `walletAdapterFromRelayer(...)` |
 | [`04-erc4337-smart-account.ts`](./examples/04-erc4337-smart-account.ts) | ERC-4337 smart accounts via permissionless.js or similar. `adapter.address` is the smart-account address (not the EOA signer). | `walletAdapterFromSmartAccount(...)` |
 | [`05-hardware-wallet-direct.ts`](./examples/05-hardware-wallet-direct.ts) | Hardware wallets attached **directly** via USB/HID (no wallet app in between) — `@ledgerhq/hw-app-eth` for Ledger; the same shape works for Trezor via `@trezor/connect`. For backend code, kiosk apps, dev tooling. | `walletAdapterFromLedger(...)` |
+| [`06-ethers-adapter.ts`](./examples/06-ethers-adapter.ts) | Dapps still on ethers v6 (or in mid-migration), bridging an `ethers.Signer` (`BrowserProvider.getSigner()` or `Wallet`) without re-wiring to viem. | `walletAdapterFromEthersSigner(...)` |
+| [`07-privy-embedded.ts`](./examples/07-privy-embedded.ts) | Privy embedded wallets via `@privy-io/react-auth`'s `useWallets()`. Handles CAIP-2 chain encoding and lazy provider fetching across wallet swaps. | `walletAdapterFromPrivyWallet(...)` |
+| [`08-safe-multisig.ts`](./examples/08-safe-multisig.ts) | Safe (Gnosis Safe) multisig via `@safe-global/protocol-kit` + `@safe-global/api-kit`. **Returns a safeTxHash, not an on-chain tx hash** — UIs need to fork to await the executed hash separately. | `walletAdapterFromSafe(...)` |
 
 Each example includes a no-network sanity check at the bottom so you
 can run it (`yarn tsx examples/0X-...ts`) without installing any of
