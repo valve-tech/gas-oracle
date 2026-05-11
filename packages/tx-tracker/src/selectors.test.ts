@@ -16,7 +16,9 @@ import type { RawTx } from '@valve-tech/chain-source'
 import {
   compileSelector,
   defaultMaxBulkSubscriptions,
+  findBulkSubBySelector,
   matchAll,
+  type CompiledSelector,
 } from './selectors.js'
 import type { BulkSelector } from './store.js'
 
@@ -128,4 +130,29 @@ test('matchAll skips txs without a hash (can\'t bulk-track them)', () => {
 
 test('defaultMaxBulkSubscriptions matches spec default (16)', () => {
   expect(defaultMaxBulkSubscriptions).toBe(16)
+})
+
+test('findBulkSubBySelector returns the sub when its compiled selector matches by reference', () => {
+  const selectorA = { kind: 'from', address: '0xa' } as const
+  const compiledA: CompiledSelector = compileSelector(selectorA)
+  const subA = { compiled: compiledA, payload: 'A' }
+  const map = new Map([['id-A', subA]])
+  expect(findBulkSubBySelector(map, selectorA)).toBe(subA)
+})
+
+test('findBulkSubBySelector returns null when no sub carries the selector (audit #7 defensive path)', () => {
+  const selectorA = { kind: 'from', address: '0xa' } as const
+  const selectorB = { kind: 'from', address: '0xb' } as const
+  const compiledA: CompiledSelector = compileSelector(selectorA)
+  const subA = { compiled: compiledA }
+  const map = new Map([['id-A', subA]])
+  // Looking up selectorB in a map that only contains a sub for
+  // selectorA — defensive null return per the audit #7 fix.
+  expect(findBulkSubBySelector(map, selectorB)).toBeNull()
+})
+
+test('findBulkSubBySelector returns null for an empty map', () => {
+  const selectorA = { kind: 'from', address: '0xa' } as const
+  const map = new Map<string, { compiled: CompiledSelector }>()
+  expect(findBulkSubBySelector(map, selectorA)).toBeNull()
 })

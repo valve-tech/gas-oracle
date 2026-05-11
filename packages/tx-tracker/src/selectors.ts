@@ -153,3 +153,27 @@ export const matchAll = (
  * running an indexer-shaped store rather than the in-memory default.
  */
 export const defaultMaxBulkSubscriptions = 16
+
+/**
+ * Reverse-lookup: find the bulk subscription whose compiled selector
+ * is the same reference as `selector`. Returns `null` on miss.
+ *
+ * Pure / data-flow only — exported here so the tracker's
+ * runBulkOn{Block,Mempool} paths can resolve match→bulk without
+ * exposing the bulk registry, and so the defensive null-on-miss
+ * branch is unit-testable (audit #7 hardening). The current public
+ * API can't reach a miss in fanout (matchSubs has no sync subscribers,
+ * so a sub can't be deleted between the `compiled` snapshot and the
+ * lookup), but future internal changes that add synchronous matchSubs
+ * subscribers, or any other path that mutates the registry mid-fanout,
+ * would otherwise crash the entire emit loop.
+ */
+export const findBulkSubBySelector = <T extends { compiled: CompiledSelector }>(
+  bulkSubs: ReadonlyMap<string, T>,
+  selector: BulkSelector,
+): T | null => {
+  for (const sub of bulkSubs.values()) {
+    if (sub.compiled.selector === selector) return sub
+  }
+  return null
+}

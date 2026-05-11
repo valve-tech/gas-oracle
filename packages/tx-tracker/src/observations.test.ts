@@ -277,6 +277,107 @@ test('block: replacement requires hash on the candidate', () => {
   expect(result.events.some((e) => e.kind === 'replaced-by')).toBe(false)
 })
 
+test('block: replacement does NOT re-fire replaced-by when status already records the same replacement (audit #4)', () => {
+  // Mempool path saw the replacement first and recorded
+  // `replacedBy: { hash, blockNumber: null }`. The replacement is now
+  // included on-chain — the block path should patch status with the
+  // now-known blockNumber but must NOT emit a second `replaced-by`
+  // for the same logical replacement.
+  const record = withStatus(
+    makeRecord({
+      identity: { from: '0xs', nonce: '0x5' },
+      hash: '0xorig',
+    }),
+    {
+      replacedBy: { hash: '0xrep', blockNumber: null },
+      firstObservedAtBlock: 99n,
+    },
+  )
+  const result = decideBlockObservation(
+    blockInput({
+      record,
+      txs: [{ hash: '0xrep', from: '0xs', nonce: '0x5' }],
+    }),
+  )
+  expect(result.events.some((e) => e.kind === 'replaced-by')).toBe(false)
+  // Status still gets updated with the now-known block number.
+  expect(result.statusPatch.replacedBy).toEqual({
+    hash: '0xrep',
+    blockNumber: 100n,
+  })
+})
+
+test('mempool: replacement on already-terminal record does not overwrite terminalAtBlockNumber (coverage)', () => {
+  // Edge: a record reached unseen-for-N-blocks terminal first (so
+  // terminalAtBlockNumber is set), then later a replacement appears
+  // in mempool. The mempool path should set replacedBy but leave
+  // terminalAtBlockNumber unchanged (the first terminal anchor wins).
+  const record = withStatus(
+    makeRecord({
+      identity: { from: '0xs', nonce: '0x5' },
+      hash: '0xorig',
+    }),
+    {
+      firstObservedAtBlock: 90n,
+      terminalAtBlockNumber: 92n, // already terminal from a prior unseen-for-N-blocks
+    },
+  )
+  const replacementTx: RawTx = {
+    hash: '0xrep',
+    from: '0xs',
+    nonce: '0x5',
+    maxFeePerGas: '0x0',
+    maxPriorityFeePerGas: '0x0',
+    gas: '0x0',
+    type: '0x2',
+  }
+  const result = decideMempoolObservation({
+    record,
+    presence: null,
+    replacementInMempool: replacementTx,
+    chainId: 1,
+    eventSource: 'mempool-snapshot',
+    envelope: ENVELOPE,
+    tipBlockNumber: 100n,
+  })
+  expect(result.statusPatch.replacedBy).toEqual({
+    hash: '0xrep',
+    blockNumber: null,
+  })
+  // terminalAtBlockNumber is NOT in the statusPatch — the prior
+  // anchor at block 92 stands.
+  expect(result.statusPatch.terminalAtBlockNumber).toBeUndefined()
+})
+
+test('block: replacement DOES emit when prev status had a different replacement hash (audit #4 boundary)', () => {
+  // Edge case: status carries a replacement with hash A, but the
+  // block contains a different replacement (hash B) for the same
+  // identity. This is unusual but possible if the upstream node
+  // surfaced two competing replacements; the block-included one is
+  // the canonical winner and should fire its own replaced-by.
+  const record = withStatus(
+    makeRecord({
+      identity: { from: '0xs', nonce: '0x5' },
+      hash: '0xorig',
+    }),
+    {
+      replacedBy: { hash: '0xrepA', blockNumber: null },
+      firstObservedAtBlock: 99n,
+    },
+  )
+  const result = decideBlockObservation(
+    blockInput({
+      record,
+      txs: [{ hash: '0xrepB', from: '0xs', nonce: '0x5' }],
+    }),
+  )
+  expect(result.events).toHaveLength(1)
+  expect(result.events[0].kind).toBe('replaced-by')
+  if (result.events[0].kind === 'replaced-by') {
+    expect(result.events[0].replacementHash).toBe('0xrepB')
+  }
+})
+
 // -------------------------------------------------------------
 // decideBlockObservation — Path 4: truly unseen
 // -------------------------------------------------------------

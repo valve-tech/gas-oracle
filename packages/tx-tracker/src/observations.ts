@@ -230,24 +230,38 @@ export const decideBlockObservation = (
     }
   }
 
-  // Path 3: replacement detection
+  // Path 3: replacement detection. When the mempool path already
+  // detected the same replacement (status.replacedBy.hash matches),
+  // patch status with the now-known blockNumber but do NOT re-fire
+  // `replaced-by` — the consumer already received the event from
+  // the mempool side and the replacement is one logical event.
+  // Mirrors the `!record.status.replacedBy` gate the mempool path
+  // uses to avoid duplicate emits in the other direction.
   if (record.identity) {
     const replacement = findReplacementInBlock(record.identity, record.hash, txs)
     if (replacement && replacement.hash) {
+      const isNewReplacement =
+        record.status.replacedBy?.hash !== replacement.hash
       return {
-        events: [
-          buildReplacedBy({
-            hash: record.hash,
-            chainId,
-            source: eventSource,
-            at: envelope,
-            replacementHash: replacement.hash,
-            replacementBlockNumber: blockNumber,
-          }),
-        ],
+        events: isNewReplacement
+          ? [
+              buildReplacedBy({
+                hash: record.hash,
+                chainId,
+                source: eventSource,
+                at: envelope,
+                replacementHash: replacement.hash,
+                replacementBlockNumber: blockNumber,
+              }),
+            ]
+          : [],
         statusPatch: {
           replacedBy: { hash: replacement.hash, blockNumber },
           lastObservedAtBlock: blockNumber,
+          // Terminal: replacement included on-chain. Retention
+          // countdown starts from this block (audit #2).
+          terminalAtBlockNumber:
+            record.status.terminalAtBlockNumber ?? blockNumber,
         },
         identityPatch: null,
         inMempoolPatch: null,
@@ -262,21 +276,28 @@ export const decideBlockObservation = (
   }
 
   const nextStreak = record.status.unseenStreak + 1
-  const events: TxEvent[] =
-    nextStreak === record.unseenThresholdBlocks
-      ? [
-          buildUnseenForNBlocks({
-            hash: record.hash,
-            chainId,
-            source: eventSource,
-            at: envelope,
-            blocks: nextStreak,
-          }),
-        ]
-      : []
+  const reachedTerminal = nextStreak === record.unseenThresholdBlocks
+  const events: TxEvent[] = reachedTerminal
+    ? [
+        buildUnseenForNBlocks({
+          hash: record.hash,
+          chainId,
+          source: eventSource,
+          at: envelope,
+          blocks: nextStreak,
+        }),
+      ]
+    : []
   return {
     events,
-    statusPatch: { unseenStreak: nextStreak },
+    statusPatch: {
+      unseenStreak: nextStreak,
+      // Terminal: unseen-for-N-blocks emitted at this block.
+      // Retention countdown starts here (audit #2).
+      ...(reachedTerminal && record.status.terminalAtBlockNumber === null
+        ? { terminalAtBlockNumber: blockNumber }
+        : {}),
+    },
     identityPatch: null,
     inMempoolPatch: null,
   }
@@ -395,6 +416,13 @@ export const decideMempoolObservation = (
     statusPatch = {
       ...statusPatch,
       replacedBy: { hash: replacementInMempool.hash, blockNumber: null },
+      // Terminal: replacement seen in mempool. Retention countdown
+      // starts from the current poll's block (audit #2). The block
+      // path may later patch this with the replacement's inclusion
+      // block, but the terminal anchor stays at the first observation.
+      ...(record.status.terminalAtBlockNumber === null
+        ? { terminalAtBlockNumber: envelope.blockNumber }
+        : {}),
     }
     events.push(
       buildReplacedBy({

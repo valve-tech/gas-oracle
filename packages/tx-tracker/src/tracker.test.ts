@@ -38,6 +38,7 @@ import type {
   FeeHistoryResult,
 } from '@valve-tech/chain-source'
 
+import { createInMemoryStore } from './store.js'
 import { createTxTracker, type TxTracker } from './tracker.js'
 
 // -------------- stub ChainSource --------------
@@ -429,6 +430,388 @@ test('subscribeAll receives every event across all hashes', () => {
   u1()
   u2()
   unsubAll()
+  tracker.stop()
+})
+
+test('durable subscriptions are rehydrated on a fresh tracker constructed against a shared store (audit #1)', async () => {
+  // Spec §13.1 + audit #1: a durable subscription persisted via
+  // tracker A's store must be re-registered against the source when
+  // tracker B starts up with the same store instance — otherwise
+  // indexers/relays silently lose tracked-set state across process
+  // restart.
+  //
+  // Test shape: one shared in-memory store, two trackers in sequence.
+  // Tracker A subscribes durable, observes the tx in a block, then
+  // stops. Tracker B constructs against the same store, starts, and
+  // awaits `ready()` (the rehydration gate). After ready, the
+  // record should be in B's `tracked` map and emitting an event for
+  // the same hash should reach subscribers — proves rehydration
+  // happened.
+  const store = createInMemoryStore()
+  // ---- Tracker A: write durable state to the store ----
+  const sourceA = makeSource()
+  const trackerA = createTxTracker({ source: sourceA, chainId: 1, store })
+  trackerA.start()
+  trackerA.subscribe('0xpersist', () => {}, {
+    emitInitial: false,
+    durable: true,
+  })
+  sourceA.emitBlock(makeBlock(100n, '0xb100', [
+    { hash: '0xpersist', from: '0xs', nonce: '0x1' },
+  ]))
+  // Allow the durable persist microtask to land.
+  await flush()
+  trackerA.stop()
+
+  // ---- Tracker B: construct against the same store ----
+  const sourceB = makeSource()
+  const trackerB = createTxTracker({ source: sourceB, chainId: 1, store })
+
+  // Pre-rehydration: status not visible.
+  expect(trackerB.getTxStatus('0xpersist')).toBeNull()
+  trackerB.start()
+  await trackerB.ready()
+  // Post-rehydration: status restored from the store.
+  const status = trackerB.getTxStatus('0xpersist')
+  expect(status).not.toBeNull()
+  expect(status!.lastSeenInBlock?.blockNumber).toBe(100n)
+
+  // Wire a fresh subscriber on B and drive TWO new blocks — the
+  // rehydrated record should accept observations and Path 2 fires a
+  // confirmation bump on the second block (Path 2 needs latestTip
+  // set, which doesn't happen until the first block lands on a
+  // fresh tracker).
+  const events: import('./events.js').TxEvent[] = []
+  trackerB.subscribe('0xpersist', (e) => events.push(e), { emitInitial: false })
+  sourceB.emitBlock(makeBlock(101n, '0xb101', [], '0xb100'))
+  sourceB.emitBlock(makeBlock(102n, '0xb102', [], '0xb101'))
+  const bump = events.find(
+    (e) => e.kind === 'seen-in-block',
+  ) as import('./events.js').TxEventSeenInBlock | undefined
+  expect(bump).toBeDefined()
+  expect(bump!.confirmations).toBeGreaterThanOrEqual(2)
+  trackerB.stop()
+})
+
+test('ready() resolves immediately when start() has not been called (audit #1 boundary)', async () => {
+  const source = makeSource()
+  const tracker = createTxTracker({ source, chainId: 1 })
+  // No start() called — ready() should still be awaitable.
+  await tracker.ready()
+})
+
+test('rehydration skips records that were already re-created via subscribe() during the await (coverage)', async () => {
+  // Race: tracker.start() kicks off rehydration. Before listDurable
+  // resolves, consumer calls tracker.subscribe(hash) — ensureRecord
+  // creates a fresh record in `tracked`. When rehydration resolves,
+  // it must NOT clobber the freshly-created record.
+  let resolveList: ((records: import('./store.js').TrackedTxRecord[]) => void) | null = null
+  const deferredStore: import('./store.js').TxTrackerStore = {
+    put: async () => {},
+    get: async () => null,
+    delete: async () => {},
+    listDurable: () =>
+      new Promise<import('./store.js').TrackedTxRecord[]>((resolve) => {
+        resolveList = resolve
+      }),
+    appendEvent: async () => {},
+  }
+  const source = makeSource()
+  const tracker = createTxTracker({
+    source,
+    chainId: 1,
+    store: deferredStore,
+  })
+  tracker.start()
+  // Race the subscribe in before resolving the rehydration.
+  tracker.subscribe('0xshared', () => {}, { emitInitial: false })
+  // Resolve listDurable with a record that uses the same hash. The
+  // rehydration path must hit `tracked.has(...)` → continue.
+  resolveList!([
+    {
+      chainId: 1,
+      hash: '0xshared',
+      status: {
+        hash: '0xshared',
+        chainId: 1,
+        lastSeenInBlock: { blockHash: '0xb', blockNumber: 99n, transactionIndex: 0, confirmations: 1, source: 'block-poll' },
+        lastSeenInMempool: null,
+        replacedBy: null,
+        vanishedAt: null,
+        unseenStreak: 0,
+        firstObservedAtBlock: 99n,
+        lastObservedAtBlock: 99n,
+        terminalAtBlockNumber: null,
+        capabilities: source.capabilities(),
+      },
+      firstSeenBlockNumber: 99n,
+      lastObservedBlockNumber: 99n,
+      retentionExpiresAtBlockNumber: 99n + 64n,
+      subscriptions: [],
+    },
+  ])
+  await tracker.ready()
+  // The pre-existing fresh-record (with no lastSeenInBlock) wins —
+  // rehydration's stale record from the store was skipped.
+  const status = tracker.getTxStatus('0xshared')
+  expect(status).not.toBeNull()
+  expect(status!.lastSeenInBlock).toBeNull()
+  tracker.stop()
+})
+
+test('rehydration routes store.listDurable errors through onError without crashing (coverage)', async () => {
+  // listDurable rejection: tracker must continue startup; the
+  // rehydration just yields zero records. onError captures the error
+  // for observability; the consumer's ready() resolves cleanly.
+  const onError = vi.fn()
+  const failingStore: import('./store.js').TxTrackerStore = {
+    put: async () => {},
+    get: async () => null,
+    delete: async () => {},
+    listDurable: async () => {
+      throw new Error('listDurable boom')
+    },
+    appendEvent: async () => {},
+  }
+  const source = makeSource()
+  const tracker = createTxTracker({
+    source,
+    chainId: 1,
+    store: failingStore,
+    onError,
+  })
+  tracker.start()
+  await tracker.ready()
+  expect(onError).toHaveBeenCalledWith(
+    'store.listDurable',
+    expect.objectContaining({ message: 'listDurable boom' }),
+  )
+  tracker.stop()
+})
+
+test('tracker.stop() tears down active bulk subscriptions (audit #3 lock-in)', async () => {
+  // Audit #3 was largely subsumed by audit #2 (retention enforcement)
+  // — once durable records are reaped on retention, auto-tracked
+  // records inside an active bulk's lifecycle do not pile up. The
+  // narrower lock-in here: tracker.stop() correctly marks bulk subs
+  // stopped so their async iterators yield `done: true` cleanly.
+  const source = makeSource()
+  const tracker = startTracker(source)
+  const sub = tracker.trackFromAddress('0xsender')
+  // Consume the bulk's events via async iterator. After tracker.stop(),
+  // the iterator should resolve `done: true` on the next .next() call.
+  const iterator = sub.events()[Symbol.asyncIterator]()
+  // No matches yet — call .next() to register a waiter (otherwise the
+  // tracker.stop() path can't observe pending consumers).
+  const pending = iterator.next()
+  tracker.stop()
+  // Once stop sets sub.stopped, subsequent .next() returns done.
+  const after = await iterator.next()
+  expect(after.done).toBe(true)
+  // Cleanup: the original pending waiter never resolves (it's not
+  // signaled by stop()), but we don't await it; the test ends here.
+  void pending
+})
+
+test('retention enforcement: durable record reaching unseen-for-N-blocks fires retention-expired (audit #2)', () => {
+  // Spec §10: "the retention window expires after a terminal state."
+  // Setup: subscribe to a hash, observe it via mempool (sets
+  // firstObservedAtBlock), then drive an empty block — that single
+  // empty block trips unseenThresholdBlocks=1 and marks the record
+  // terminal. With retentionBlocks=3, the record is GC'd 4 blocks
+  // later with Stopped({ reason: 'retention-expired' }).
+  const source = makeSource()
+  const tracker = createTxTracker({
+    source,
+    chainId: 1,
+    retentionBlocks: 3,
+    unseenThresholdBlocks: 1,
+  })
+  tracker.start()
+  const events: import('./events.js').TxEvent[] = []
+  // Durable: cleanupRecord won't drop us when the subs go to 0.
+  tracker.subscribe('0xfaraway', (e) => events.push(e), {
+    emitInitial: false,
+    durable: true,
+  })
+  // Mempool sees the tx → firstObservedAtBlock gets set.
+  source.emitMempool({
+    pending: {
+      '0xs': {
+        '0x1': { hash: '0xfaraway', from: '0xs', nonce: '0x1' },
+      },
+    },
+    queued: {},
+  })
+  // Block 200 lands; tx not in block (and we'll clear mempool first).
+  source.emitMempool({ pending: {}, queued: {} })
+  source.emitBlock(makeBlock(200n, '0xb200', []))
+  // unseen-for-N-blocks should fire here (streak = 1 = threshold).
+  // terminalAtBlockNumber = 200.
+  expect(events.some((e) => e.kind === 'unseen-for-N-blocks')).toBe(true)
+
+  // Advance to block 203 (= 200 + retentionBlocks). Retention
+  // condition is `blockNumber > terminal + retentionBlocks`, so 203
+  // is the LAST block that should NOT trigger.
+  source.emitBlock(makeBlock(201n, '0xb201', []))
+  source.emitBlock(makeBlock(202n, '0xb202', []))
+  source.emitBlock(makeBlock(203n, '0xb203', []))
+  expect(events.some((e) => e.kind === 'stopped')).toBe(false)
+  // Block 204 trips it.
+  source.emitBlock(makeBlock(204n, '0xb204', []))
+  const stoppedEvent = events.find(
+    (e) => e.kind === 'stopped',
+  ) as import('./events.js').TxEventStopped | undefined
+  expect(stoppedEvent).toBeDefined()
+  expect(stoppedEvent!.reason).toBe('retention-expired')
+  // getTxStatus returns null after retention cleanup.
+  expect(tracker.getTxStatus('0xfaraway')).toBeNull()
+  tracker.stop()
+})
+
+test('retention enforcement: store.delete rejection routes through onError (coverage)', async () => {
+  // When retention reaps a durable record, store.delete is fired and
+  // awaited only via .catch — any rejection must go to onError so
+  // observability survives a flaky external store (Redis blip, etc).
+  const onError = vi.fn()
+  const failingDeleteStore: import('./store.js').TxTrackerStore = {
+    put: async () => {},
+    get: async () => null,
+    delete: async () => {
+      throw new Error('store.delete boom')
+    },
+    listDurable: async () => [],
+    appendEvent: async () => {},
+  }
+  const source = makeSource()
+  const tracker = createTxTracker({
+    source,
+    chainId: 1,
+    store: failingDeleteStore,
+    retentionBlocks: 1,
+    unseenThresholdBlocks: 1,
+    onError,
+  })
+  tracker.start()
+  tracker.subscribe('0xtarget', () => {}, { emitInitial: false, durable: true })
+  source.emitMempool({
+    pending: { '0xs': { '0x1': { hash: '0xtarget', from: '0xs', nonce: '0x1' } } },
+    queued: {},
+  })
+  source.emitMempool({ pending: {}, queued: {} })
+  // Block 100: triggers unseen-for-N-blocks → terminal at 100.
+  source.emitBlock(makeBlock(100n, '0xb100', []))
+  // Block 102 > 100 + 1: retention fires, store.delete called and rejects.
+  source.emitBlock(makeBlock(101n, '0xb101', []))
+  source.emitBlock(makeBlock(102n, '0xb102', []))
+  // Flush the rejection through the microtask queue so the .catch handler runs.
+  await flush()
+  expect(onError).toHaveBeenCalledWith(
+    'store.delete',
+    expect.objectContaining({ message: 'store.delete boom' }),
+  )
+  tracker.stop()
+})
+
+test('retention enforcement: in-flight record (no terminal observation) is not GC\'d by retention (audit #2 boundary)', () => {
+  // A record that's still happily confirming (lastSeenInBlock keeps
+  // bumping confirmations every block) has terminalAtBlockNumber === null
+  // and must NOT be reaped by retention. Only durable+terminal records
+  // are subject to retention-expired; in-flight records continue
+  // until cleanupRecord fires (subs.size===0 && !hasDurableSub).
+  const source = makeSource()
+  const tracker = createTxTracker({
+    source,
+    chainId: 1,
+    retentionBlocks: 2,
+  })
+  tracker.start()
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xa', (e) => events.push(e), { emitInitial: false, durable: true })
+  // Tx mined at block 100, then 5 confirmation bumps. Each bump
+  // advances lastObservedAtBlock but terminalAtBlockNumber stays null.
+  source.emitBlock(makeBlock(100n, '0xb100', [{ hash: '0xa', from: '0xs', nonce: '0x1' }]))
+  for (let n = 101; n <= 105; n += 1) {
+    source.emitBlock(makeBlock(BigInt(n), `0xb${n}`, []))
+  }
+  // No retention-expired despite being well past block 100 + retentionBlocks=2.
+  expect(events.some((e) => e.kind === 'stopped')).toBe(false)
+  expect(tracker.getTxStatus('0xa')).not.toBeNull()
+  tracker.stop()
+})
+
+test('subscribeAll callbacks survive stop()/start() cycle (audit #8 lock-in)', () => {
+  // Documented invariant: globalSubs (the subscribeAll subscriber set)
+  // is deliberately NOT reset on stop(), so a long-lived analytics /
+  // logging consumer that wires subscribeAll once at construction
+  // continues receiving events across tracker restart cycles. This
+  // test locks in that contract.
+  const source = makeSource()
+  const tracker = startTracker(source)
+  const all: import('./events.js').TxEvent[] = []
+  const unsubAll = tracker.subscribeAll((e) => all.push(e))
+  // Drive an event under the first lifecycle.
+  collect(tracker, '0xa', { emitInitial: false })
+  source.emitBlock(
+    makeBlock(100n, '0xb1', [{ hash: '0xa', from: '0xs', nonce: '0x1' }]),
+  )
+  const beforeStopCount = all.filter((e) => e.kind === 'seen-in-block').length
+  expect(beforeStopCount).toBe(1)
+  // Restart cycle.
+  tracker.stop()
+  tracker.start()
+  // New subscriber for a fresh tracking after restart, drive an event.
+  collect(tracker, '0xb', { emitInitial: false })
+  source.emitBlock(
+    makeBlock(101n, '0xb2', [{ hash: '0xb', from: '0xs', nonce: '0x1' }]),
+  )
+  // The subscribeAll callback registered before the restart should
+  // have received the post-restart event too.
+  const postRestartHits = all
+    .filter((e) => e.kind === 'seen-in-block')
+    .map((e) => e.hash)
+  expect(postRestartHits).toEqual(['0xa', '0xb'])
+  unsubAll()
+  tracker.stop()
+})
+
+test('bulk fanout: synchronous sub.stop() from a per-hash callback does not throw (audit #7 hardening)', () => {
+  // Audit #7 flagged that `findBulkSubBySelector` would throw if a
+  // sub was deleted from `bulkSubs` mid-fanout. Investigation showed
+  // the throw is unreachable from the public API (matchSubs only has
+  // an async-iterable queue subscriber, which never runs consumer
+  // code synchronously inside emit). But the per-hash callback path
+  // (sub.subscribe → perHashSubs.emit) DOES run sync, and a consumer
+  // calling sub.stop() from there mutates bulkSubs while subsequent
+  // perHashSubs emits in the same tick are still in flight.
+  //
+  // This test exercises the most-likely consumer pattern: wake up on
+  // first per-hash event for a bulk, stop the bulk to "unhook." Even
+  // though spec §11.1 says auto-tracked records continue (so other
+  // events may still fire on perHashSubs), the call MUST NOT throw.
+  // Defensive null-return in findBulkSubBySelector locks this in.
+  const source = makeSource()
+  const tracker = startTracker(source)
+  const events: string[] = []
+  const sub = tracker.trackFromAddress('0xsender')
+  const unsub = sub.subscribe((event) => {
+    events.push(event.hash)
+    sub.stop()
+  })
+  expect(() => {
+    source.emitBlock(
+      makeBlock(100n, '0xb1', [
+        { hash: '0xt1', from: '0xsender', nonce: '0x1' },
+        { hash: '0xt2', from: '0xsender', nonce: '0x2' },
+      ]),
+    )
+  }).not.toThrow()
+  // First per-hash event should have fired before sub.stop() ran.
+  // Subsequent per-hash events on auto-tracked records are not the
+  // bug under test — spec §11.1 explicitly says they continue.
+  expect(events.length).toBeGreaterThanOrEqual(1)
+  expect(events[0]).toBe('0xt1')
+  unsub()
   tracker.stop()
 })
 
@@ -1354,6 +1737,89 @@ test('receipt-poll-fallback — emits seen-in-block from receipt-poll on degrade
   expect(seen).toBeDefined()
   expect(seen!.blockHash).toBe('0xblockfromreceipt')
   expect(seen!.blockNumber).toBe(0x42n)
+  tracker.stop()
+})
+
+test('receipt-poll-fallback — does not emit on globalSubs when record was orphaned mid-await (audit #6)', async () => {
+  // Race: receipt-poll for record A starts, source.getReceipt awaits.
+  // During the await, A's only subscriber leaves (cleanupRecord drops
+  // A from `tracked`). Then a fresh subscribe re-creates A' under the
+  // same hash. Pre-fix, the post-await emit walked `tracked.has(hash)`
+  // which returns true (A' is there) and fired on globalSubs with the
+  // OLD record's stale block coordinate. Per-hash subs of A' didn't
+  // see it (different Subscriptions instance), so the artifact only
+  // showed up to subscribeAll consumers — silent inconsistency
+  // between global and per-hash streams. Fix: identity check, not
+  // presence check.
+  const degradedCaps: Capabilities = {
+    newHeads: 'unavailable',
+    newPendingTransactions: 'unavailable',
+    txpoolContent: 'gated',
+    receiptByHash: 'available',
+    reprobeOnReconnect: false,
+  }
+  // Deferred receipt — we resolve it manually after orchestrating
+  // the unsub + re-subscribe race window.
+  let resolveReceipt: ((r: TransactionReceipt | null) => void) | null = null
+  const source = makeSource({
+    initialCaps: degradedCaps,
+    getReceiptImpl: () =>
+      new Promise<TransactionReceipt | null>((resolve) => {
+        resolveReceipt = resolve
+      }),
+  })
+  const tracker = createTxTracker({
+    source,
+    chainId: 1,
+    lostSignalPolicy: { strategy: 'receipt-poll-fallback', pollEveryBlocks: 1 },
+  })
+  tracker.start()
+
+  const allEvents: import('./events.js').TxEvent[] = []
+  tracker.subscribeAll((e) => allEvents.push(e))
+
+  // Subscribe with cb_A, drive a block to start receipt-poll.
+  const unsubA = tracker.subscribe('0xtarget', () => {}, { emitInitial: false })
+  source.emitBlock({
+    number: '0x10',
+    hash: '0xtip10',
+    parentHash: '0x9',
+    timestamp: '0x0',
+    baseFeePerGas: '0x0',
+    gasLimit: '0x0',
+    gasUsed: '0x0',
+    transactions: [],
+  })
+  // Yield once so the receipt-poll's await getReceipt is in-flight.
+  await flush()
+  expect(resolveReceipt).not.toBeNull()
+
+  // Mid-await: drop the original subscriber (cleanupRecord deletes A
+  // from `tracked`), then re-subscribe with cb_A' (creates new record
+  // A' under the same hash).
+  unsubA()
+  const aPrimeEvents: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xtarget', (e) => aPrimeEvents.push(e), { emitInitial: false })
+
+  // Resolve the receipt — the post-await branch should detect A is
+  // no longer the canonical record under the hash and bail.
+  resolveReceipt!({
+    transactionHash: '0xtarget',
+    blockHash: '0xblockfromreceipt',
+    blockNumber: '0x42',
+    status: '0x1',
+  })
+  await flush()
+  await flush()
+
+  // A' should not have received an event from the prior poll cycle.
+  expect(aPrimeEvents.find((e) => e.kind === 'seen-in-block')).toBeUndefined()
+  // globalSubs should not have received a phantom seen-in-block from
+  // the orphaned poll either.
+  const phantomGlobal = allEvents.find(
+    (e) => e.kind === 'seen-in-block' && e.source === 'receipt-poll',
+  )
+  expect(phantomGlobal).toBeUndefined()
   tracker.stop()
 })
 

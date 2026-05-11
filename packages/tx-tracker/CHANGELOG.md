@@ -6,6 +6,78 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `TxTracker.ready(): Promise<void>` — resolves when the
+  durable-subscription rehydration triggered by the most recent
+  `start()` has completed. Indexer / relay consumers should
+  `await tracker.ready()` before assuming the tracked-set is fully
+  restored from the store. Resolves cleanly even on listDurable
+  errors (which are routed through `onError`).
+- `CreateTxTrackerOptions.retentionBlocks?: number` — default `64`,
+  spec §10. How many blocks past a terminal state (`replaced-by` or
+  `unseen-for-N-blocks` emitted) the tracker keeps a record before
+  emitting `Stopped({ reason: 'retention-expired' })` and dropping
+  it. Pass the same value to your store implementation so persisted
+  retention matches in-memory.
+- `TxStatus.terminalAtBlockNumber: bigint | null` — populated when a
+  hash reaches a terminal-and-finalized state. Anchors the retention
+  countdown per spec §10. Null while the hash is still in flight.
+- `findBulkSubBySelector(bulkSubs, selector)` exported from the
+  package root (extracted from the tracker's runBulkOnBlock /
+  Mempool path; pure, unit-tested in isolation).
+
+### Fixed
+
+- **Durable subscriptions are now rehydrated on start() (audit #1).**
+  Records persisted via `subscribe(hash, cb, { durable: true })` are
+  re-registered against the source when a fresh tracker starts up
+  against the same store — fixes silent data loss across process
+  restart for indexer / relay consumers. Previously, the write side
+  of durable persistence worked but the read side was missing
+  entirely.
+- **Retention enforcement now actually fires (audit #2).** The
+  `'retention-expired'` reason on `Stopped` was declared but never
+  emitted; durable records grew unbounded in both `tracked` and the
+  store. Records past `terminalAtBlockNumber + retentionBlocks` are
+  now reaped on each block tick with `Stopped({ reason:
+  'retention-expired' })` emitted to per-hash subs + globalSubs,
+  followed by `store.delete`.
+- **Bulk subscriptions are torn down cleanly on tracker.stop()
+  (audit #3 lock-in).** Bulks' `stopped` flag is set during stop,
+  making their async iterators yield `done: true` on the next
+  `next()`. Most of the original audit-#3 concern about leaked
+  per-hash subscriptions is subsumed by the retention fix (audit
+  #2): auto-tracked records now reach retention-expired cleanup
+  rather than persisting forever.
+- **`replaced-by` no longer fires twice for one logical replacement
+  (audit #4).** Previously the mempool side emitted with
+  `replacementBlockNumber: null`, then the block side re-emitted
+  with the inclusion block. The block path now patches status with
+  the now-known blockNumber but suppresses the duplicate event when
+  the replacement hash matches what mempool already surfaced.
+- **Receipt-poll-fallback identity race (audit #6).** Records
+  unsubscribed AND re-subscribed (under the same hash) while
+  `getReceipt` was in-flight no longer leak phantom `seen-in-block`
+  events onto `subscribeAll`. Post-await check now compares record
+  identity (`tracked.get(hash) === record`), not just presence
+  (`tracked.has(hash)`).
+- **Defensive null-on-miss in bulk-sub lookup (audit #7
+  hardening).** `findBulkSubBySelector` returns `null` instead of
+  throwing when the registry is mutated mid-fanout. Currently
+  unreachable from the public API (matchSubs has no sync
+  subscribers), but a future internal change that adds one would
+  otherwise crash the entire emit loop.
+
+### Documented
+
+- `subscribeAll` callbacks deliberately survive `stop()`/`start()`
+  cycles (audit #8 lock-in). Long-lived analytics consumers wire
+  one callback at construction and continue receiving events across
+  restart. Comment added in `stop()`; behavior locked in by test.
+
 ## [0.10.1] — 2026-05-08
 
 Synchronized release — no changes to this package. Republished at

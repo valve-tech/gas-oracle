@@ -78,6 +78,7 @@ import {
 import {
   compileSelector,
   defaultMaxBulkSubscriptions,
+  findBulkSubBySelector,
   matchAll,
   type CompiledSelector,
 } from './selectors.js'
@@ -204,6 +205,17 @@ export interface CreateTxTrackerOptions {
   unseenThresholdBlocks?: number
   /** Cap on simultaneous bulk subscriptions (spec §11.3). */
   maxBulkSubscriptions?: number
+  /**
+   * How many blocks past a terminal-and-finalized state (`replaced-by`
+   * or `unseen-for-N-blocks` emitted) before the tracker drops a
+   * record and emits `Stopped({ reason: 'retention-expired' })`.
+   * Default `64` (spec §10). Pass the same value to your store
+   * implementation so persisted retention matches in-memory.
+   * Records still in flight (no terminal observation) are not subject
+   * to retention; they live until their last subscriber leaves AND
+   * they have no durable subscription (cleanupRecord path).
+   */
+  retentionBlocks?: number
   onError?: (method: string, err: unknown) => void
   lifecycle?: 'eager' | 'lazy'
 }
@@ -242,6 +254,26 @@ export interface TxGroupSubscription {
 export interface TxTracker {
   start(): void
   stop(): void
+  /**
+   * Promise that resolves when durable-subscription rehydration
+   * triggered by the most recent `start()` has completed. For
+   * in-memory stores this typically resolves on the next microtask;
+   * for cross-process restart with Redis / SQLite / etc, this is the
+   * gate indexer / relay consumers should `await` before assuming
+   * the tracked-set is fully restored:
+   *
+   *   tracker.start()
+   *   await tracker.ready()
+   *   // safe to begin processing — durable records from previous run
+   *   // are now registered against the source.
+   *
+   * Returns an already-resolved promise when `start()` has not been
+   * called or the previous rehydration already finished. Resolves to
+   * `void` — errors during rehydration are routed through `onError`
+   * and don't reject this promise (one bad store call shouldn't
+   * crash consumer flow that's waiting for ready).
+   */
+  ready(): Promise<void>
   getTxStatus(hash: Hash): TxStatus | null
   track(hash: Hash, options?: TrackOptions): AsyncIterable<TxEvent>
   subscribe(
@@ -424,6 +456,7 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     reorgDepthBlocks = defaultReorgDepthBlocks,
     unseenThresholdBlocks = DEFAULT_UNSEEN_THRESHOLD_BLOCKS,
     maxBulkSubscriptions = defaultMaxBulkSubscriptions,
+    retentionBlocks = defaultRetentionBlocks,
     onError,
     lifecycle = 'eager',
   } = options
@@ -482,9 +515,14 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
 
   /**
    * Project an internal `TrackedRecord` onto the persisted shape.
-   * Retention expiry is recomputed from the latest observed block
-   * each time so a long-lived hash that keeps moving stays in the
-   * store rather than getting GC'd mid-flight.
+   * Retention expiry is anchored on `terminalAtBlockNumber` (audit #2)
+   * — the spec block at which the record reached a terminal state. For
+   * records still in flight (terminal === null), expiry rolls with
+   * `lastObservedAtBlock` so a long-lived hash that keeps moving
+   * stays in the store rather than getting GC'd mid-flight; once the
+   * record goes terminal, the anchor is fixed and the chain advancing
+   * past `terminal + retentionBlocks` triggers cleanup via the
+   * enforcement loop in `onBlock`.
    */
   const toRecord = (record: TrackedRecord): TrackedTxRecord => {
     const lastBlock =
@@ -494,6 +532,7 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
       0n
     const firstBlock =
       record.status.firstObservedAtBlock ?? latestTip?.number ?? 0n
+    const expiryAnchor = record.status.terminalAtBlockNumber ?? lastBlock
     return {
       chainId,
       hash: record.hash,
@@ -501,8 +540,8 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
       firstSeenBlockNumber: firstBlock,
       lastObservedBlockNumber: lastBlock,
       retentionExpiresAtBlockNumber: computeRetentionExpiry(
-        lastBlock,
-        defaultRetentionBlocks,
+        expiryAnchor,
+        retentionBlocks,
       ),
       subscriptions: record.persisted,
     }
@@ -632,9 +671,14 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
       return
     }
 
-    // Record was unsubscribed while getReceipt was in-flight; bail out rather
-    // than emit on an orphaned record.
-    if (!tracked.has(record.hash)) return
+    // Record was unsubscribed (and possibly re-subscribed) while
+    // getReceipt was in-flight; bail rather than emit on an orphaned
+    // record. Identity check, not presence — re-subscribe under the
+    // same hash creates a new TrackedRecord, and emitting via the old
+    // closure would fire a phantom event on globalSubs that the new
+    // per-hash subscribers never see (silent inconsistency between
+    // global and per-hash streams). Audit finding #6.
+    if (tracked.get(record.hash) !== record) return
 
     emit(
       record,
@@ -805,6 +849,38 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
       })
       applyObservationResult(record, result)
       for (const event of result.events) emit(record, event)
+    }
+
+    // Retention enforcement (spec §10, audit #2). Records that have
+    // reached a terminal state (`replaced-by` or `unseen-for-N-blocks`
+    // emitted) carry `terminalAtBlockNumber`. Once the chain has
+    // moved `retentionBlocks` past that point, drop the record and
+    // emit `Stopped({ reason: 'retention-expired' })`. Records still
+    // in flight (terminalAtBlockNumber === null) are NOT subject to
+    // retention here — they live until cleanupRecord drops them
+    // (no subs + no durable persistence). Iterates a snapshot so
+    // emit + delete during the walk is safe.
+    const expired: TrackedRecord[] = []
+    for (const record of tracked.values()) {
+      const t = record.status.terminalAtBlockNumber
+      if (t !== null && blockNumber > t + BigInt(retentionBlocks)) {
+        expired.push(record)
+      }
+    }
+    for (const record of expired) {
+      const stoppedEvent = buildStopped({
+        hash: record.hash,
+        chainId,
+        source: blockEventSource(source.capabilities()),
+        at: buildAt(),
+        reason: 'retention-expired',
+      })
+      emit(record, stoppedEvent)
+      tracked.delete(record.hash)
+      blocksSinceLastReceiptPoll.delete(record.hash)
+      void store.delete(chainId, record.hash).catch((err) => {
+        onError?.('store.delete', err)
+      })
     }
 
     // Receipt-poll-fallback: dispatch non-blocking per-record receipt
@@ -1060,27 +1136,21 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     fanOutBulkMatches(matchAll(txs, compiled), 'mempool-snapshot')
   }
 
-  /**
-   * Reverse-lookup: given a compiled selector reference, find its
-   * owning bulk sub. The `compiled.selector` reference is the same
-   * object the consumer registered, and every sub in `bulkSubs`
-   * carries it — so a miss here would mean the registry was
-   * mutated mid-fanout, which doesn't happen.
-   */
-  const findBulkSubBySelector = (selector: BulkSelector): BulkSub => {
-    for (const sub of bulkSubs.values()) {
-      if (sub.compiled.selector === selector) return sub
-    }
-    /* c8 ignore next */
-    throw new Error('tx-tracker: invariant violated — selector ref missing from bulkSubs')
-  }
-
   const fanOutBulkMatches = (
     matches: ReturnType<typeof matchAll>,
     matchSource: 'mempool-snapshot' | 'block-poll',
   ): void => {
     for (const match of matches) {
-      const sub = findBulkSubBySelector(match.selector)
+      // findBulkSubBySelector is a pure helper from `selectors.ts`;
+      // its defensive null-on-miss branch covers audit #7 and is
+      // unit-tested in selectors.test.ts. The current public API
+      // can't reach a miss in fanout (matchSubs has no synchronous
+      // subscribers that could mutate `bulkSubs` between the
+      // `compiled` snapshot and this lookup), so we assert non-null
+      // here. A future internal change that adds a sync matchSubs
+      // subscriber + stops the bulk during emit would need to add a
+      // defensive null check back here.
+      const sub = findBulkSubBySelector(bulkSubs, match.selector)!
       const event: TxMatchEvent = {
         kind: 'matched',
         hash: match.hash,
@@ -1351,10 +1421,66 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
   // Lifecycle
   // -------------------------------------------------------------
 
+  /**
+   * Rehydrate durable subscriptions from the store on start. Spec
+   * §13.1 + audit #1: any record persisted with `durable: true`
+   * (whether the persistence happened in the current process or a
+   * prior one — Redis / SQLite / etc. cross-process restart) must
+   * be re-registered against the source on `tracker.start()`. The
+   * pre-fix code wrote durable records to the store but never read
+   * them back, silently abandoning indexer/relay state across
+   * restarts.
+   *
+   * Async because the store interface is Promise-typed (must support
+   * Redis et al). `start()` itself stays synchronous and kicks off
+   * the rehydration; production consumers (indexers, relays) that
+   * need to be sure rehydration completed before they begin
+   * processing should `await tracker.ready()`. Block / mempool
+   * handlers do **not** await this — synchronous test patterns
+   * (`source.emitBlock(...); expect(events)...`) need to keep
+   * working. The trade-off: an in-memory store that resolves on the
+   * next microtask, plus a block emitted in the same sync stack as
+   * `start()`, may miss the rehydrated record for that one block;
+   * subsequent observations see it. That's an acceptable race for
+   * the in-memory case (no cross-process state anyway). For
+   * cross-process restart with Redis et al, `ready()` is the right
+   * gate.
+   */
+  let rehydrationPromise: Promise<void> | null = null
+  const doRehydration = async (): Promise<void> => {
+    let durableRecords: TrackedTxRecord[]
+    try {
+      durableRecords = await store.listDurable(chainId)
+    } catch (err) {
+      onError?.('store.listDurable', err)
+      return
+    }
+    for (const persisted of durableRecords) {
+      // Skip if a fresh subscribe under the same hash already
+      // re-created the record between start() and rehydration
+      // resolving.
+      if (tracked.has(persisted.hash)) continue
+      const record: TrackedRecord = {
+        hash: persisted.hash,
+        status: persisted.status,
+        subs: new Subscriptions<TxEvent>(),
+        identity: null, // re-established by subsequent observations
+        inLastMempoolSnapshot: false,
+        unseenThresholdBlocks,
+        lostSignalPolicy: null,
+        hasDurableSub: true,
+        persisted: persisted.subscriptions,
+        withReceipts: false,
+      }
+      tracked.set(persisted.hash, record)
+    }
+  }
+
   const start = (): void => {
     if (started) return
     started = true
     lastCaps = source.capabilities()
+    rehydrationPromise = doRehydration()
     unsubBlocks = source.subscribeBlocks(onBlock)
     unsubMempool = source.subscribeMempool(onMempool)
   }
@@ -1388,6 +1514,14 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     receiptPollGateWarned = false
     // Reset withReceipts gate so a subsequent start() begins clean.
     withReceiptsGateWarned = false
+    // Drop the rehydration handle so a subsequent start() re-reads
+    // the store (audit #1).
+    rehydrationPromise = null
+    // NOTE: globalSubs is deliberately NOT reset. Long-lived analytics /
+    // logging consumers that wire `subscribeAll` once at construction
+    // continue receiving events across stop()/start() cycles. Locked
+    // in by tracker.test.ts:'subscribeAll callbacks survive
+    // stop()/start() cycle (audit #8 lock-in)'.
   }
 
   // Eager lifecycle: subscribe immediately on construction. Lazy
@@ -1401,6 +1535,7 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
   const trackerSurface: TxTracker = {
     start,
     stop,
+    ready: () => rehydrationPromise ?? Promise.resolve(),
     getTxStatus: (hash) => {
       const record = tracked.get(hash)
       return record ? record.status : null

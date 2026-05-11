@@ -266,6 +266,17 @@ export interface TxStatus {
   firstObservedAtBlock: bigint | null
   /** Most recent observation block number — used by retention. */
   lastObservedAtBlock: bigint | null
+  /**
+   * Block at which this hash reached a terminal-and-finalized state
+   * (`replaced-by` emitted, or `unseen-for-N-blocks` emitted). Null
+   * while the hash is still in flight. Retention countdown starts
+   * here per spec §10 — the tracker drops records and emits
+   * `Stopped({ reason: 'retention-expired' })` once
+   * `currentBlock > terminalAtBlockNumber + retentionBlocks`. Null
+   * means the record is still in flight and is not subject to
+   * retention-driven cleanup.
+   */
+  terminalAtBlockNumber: bigint | null
   /** Capabilities at the most recent emit. */
   capabilities: Capabilities
 }
@@ -431,5 +442,6 @@ export const buildInitialStatus = (input: {
   unseenStreak: 0,
   firstObservedAtBlock: null,
   lastObservedAtBlock: null,
+  terminalAtBlockNumber: null,
   capabilities: input.capabilities,
 })
