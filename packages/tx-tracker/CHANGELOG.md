@@ -6,6 +6,58 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] — 2026-05-12
+
+### Added
+
+- **`TrackOptions.probeMined`** — per-subscription consumer-supplied
+  mined-detection probe. Generalizes the lesson behind
+  `receipt-poll-fallback`: any signal that can answer
+  "is hash X included, and if so where?" can feed observations into
+  the tracker's event pipeline. The probe runs every block tick for
+  every record that has one attached; whichever path reports
+  inclusion first wins via the existing height-ordering rule on
+  `lastSeenInBlock.blockNumber`. Probe-derived observations emit
+  `seen-in-block` with `source: 'receipt-poll'` (the chain-source
+  v0.13.0 doc widening covers the discriminator's new meaning).
+  First-set-wins across multiple subscribes on the same hash
+  (mirrors `lostSignalPolicy`). The probe is NOT permitted to drive
+  reorg / vanished-from-block events (spec §12.3) — divergence
+  detection stays anchored on the source's block stream where
+  parent-hash chains are authoritative. No capability gate (the
+  consumer's probe IS the authority); no tick counter (debounce
+  internally if needed).
+- `ProbeMined` and `ProbeMinedResult` types exported from the
+  package root. Minimal return shape `{ blockHash, blockNumber }` —
+  `transactionIndex` is hardcoded to `0` and `confirmations` to `1`
+  on emit (the tracker's authoritative tip is what computes the
+  confirmations count on subsequent blocks; letting the probe
+  supply it would either duplicate the tracker's math or contradict
+  it).
+
+### Notes
+
+- Use case: consumers with a server-side block indexer (Ponder,
+  Subsquid, custom Postgres) that observes inclusion before the
+  client's RPC block-poll tick. Pre-v0.13, the parallel-poll
+  workaround ran a separate state machine outside the tracker and
+  bypassed reorg, retention, replacement, and identity-race
+  handling for the indexer's faster mined signal. The probe folds
+  that signal into the tracker's pipeline so all those properties
+  carry over automatically.
+- Closures are not serialized — durable records rehydrated from the
+  store on `tracker.start()` start with no probe attached until a
+  fresh `subscribe(hash, cb, { probeMined })` re-binds one. Same
+  precedent as predicate selectors (spec §13.2).
+- 11 new `tracker.test.ts` cases pin the probe path's contract:
+  happy emit + status mirror, returning null, throw routes through
+  `onError`, throw with no `onError` is swallowed, block-poll wins
+  height-ordering race, probe wins on strictly-newer block,
+  first-set-wins across subscribes, default `null` probe early-
+  returns the dispatch, identity check rejects mid-await orphaned
+  emits, probe runs every block (no tick counter / no capability
+  gate), reorg invalidates probe-reported inclusion.
+
 ## [0.12.0] — 2026-05-11
 
 ### Notes

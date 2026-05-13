@@ -6,6 +6,32 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] — 2026-05-12
+
+### Changed
+
+- `EventSource` doc comment for the `'receipt-poll'` discriminator
+  widened. Previously described only the receipt-poll fallback path;
+  now explicitly covers any per-hash mined check that isn't the
+  source's own block-poll. `@valve-tech/tx-tracker` v0.13.0 uses
+  this discriminator for both its existing `receipt-poll-fallback`
+  lost-signal policy AND its new
+  `TrackOptions.probeMined` per-subscription consumer-supplied probe.
+  The type value itself is unchanged — `'receipt-poll'` is still the
+  same string literal in the discriminated union. No consumer
+  migration required.
+
+### Notes
+
+- The widening reflects how the discriminator is actually consumed:
+  it has always meant "per-hash mined check, not from the canonical
+  block stream," and `buildVanishedFromBlock`'s spec §12.3 rejection
+  of this source has always been the authoritative constraint.
+  Consumers who already gate UI / business logic on
+  `event.source === 'receipt-poll'` will see the same set of events
+  they always have, plus any newly-arriving probe-derived events
+  from consumers that opt into the tx-tracker probe API.
+
 ## [0.12.0] — 2026-05-11
 
 ### Added

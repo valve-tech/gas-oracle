@@ -1,6 +1,6 @@
 {
   "name": "@valve-tech/viem-errors",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Cause-chain-aware error utilities for viem-based dapps. Detect EIP-1193 user rejections (4001 / class name / message regex), extract decoded custom Solidity error names from anywhere in viem's nested cause chain, map raw RPC/wallet/contract errors to short user-friendly messages with overridable patterns, and route wagmi-style onError sinks through one helper. Pure functions, no runtime dependencies. Part of the valve-tech/evm-toolkit synchronized release line.",
   "license": "MIT",
   "homepage": "https://github.com/valve-tech/evm-toolkit/tree/main/packages/viem-errors#readme",

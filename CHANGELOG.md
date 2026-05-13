@@ -6,6 +6,51 @@ this file. Per-package details live in each `packages/*/CHANGELOG.md`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] — 2026-05-12
+
+Minor feature release. One additive change to `@valve-tech/tx-tracker` —
+the rest of the toolkit re-publishes on the synced version line.
+
+**`@valve-tech/tx-tracker`** — new `TrackOptions.probeMined` option.
+Per-subscription consumer-supplied mined-detection probe. Lets consumers
+plug a non-RPC inclusion signal — typically a server-side block indexer
+like Ponder, Subsquid, or a custom Postgres pipeline — into the
+tracker's existing event pipeline. The probe runs every block tick for
+every record that has one attached, in addition to the source's own
+block-poll inclusion check; whichever path reports inclusion first wins
+via the existing height-ordering rule on `lastSeenInBlock.blockNumber`.
+Probe-derived observations emit `seen-in-block` with
+`source: 'receipt-poll'`. First-set-wins across multiple subscribes on
+the same hash (mirrors the `lostSignalPolicy` contract). The probe is
+NOT permitted to drive reorg / vanished-from-block events
+(spec §12.3) — divergence detection stays anchored on the source's
+block stream where parent-hash chains are authoritative. No capability
+gate (the consumer's probe IS the authority); no tick counter
+(debounce internally if needed).
+
+The seam closes a structural gap consumers were hitting in production:
+indexer-backed apps were running a parallel poll loop alongside the
+tracker subscription and bypassing the tracker's reorg / retention /
+replacement / identity-race handling for the indexer's faster mined
+signal. The probe folds that signal into the tracker's pipeline so
+all of those properties carry over automatically.
+
+**`@valve-tech/chain-source`** — `EventSource` doc comment widened.
+The `'receipt-poll'` discriminator now explicitly covers any per-hash
+mined check that isn't the source's own block-poll: the tx-tracker
+uses it for both the existing `receipt-poll-fallback` lost-signal
+policy AND the new `TrackOptions.probeMined` per-subscription
+consumer-supplied probe. The type value itself is unchanged.
+
+- **tx-tracker**: new `TrackOptions.probeMined` API +
+  `ProbeMined` / `ProbeMinedResult` exported types.
+- **chain-source**: `EventSource` doc widening (no type-shape change).
+- **gas-oracle**, **trueblocks-sdk**, **tx-flight-react**,
+  **viem-errors**, **wallet-adapter**: synced no-op republish.
+
+Coverage stays at 100/100/100/100 across all 7 packages. 1088 tests
+total (was 1077; +11 probe-path tests in tx-tracker).
+
 ## [0.12.0] — 2026-05-11
 
 Feature release. Five pieces of work shipped together, all

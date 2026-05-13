@@ -5,6 +5,16 @@ All notable changes to `@valve-tech/gas-oracle` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] — 2026-05-12
+
+### Notes
+
+- Synchronized release — no changes to this package. Republished at
+  0.13.0 alongside the rest of the toolkit; the substantive change
+  is in `@valve-tech/tx-tracker` (new `TrackOptions.probeMined`
+  consumer-supplied mined-detection probe). See
+  `@valve-tech/tx-tracker`'s CHANGELOG for details.
+
 ## [0.12.0] — 2026-05-11
 
 ### Added
