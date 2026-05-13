@@ -3060,3 +3060,382 @@ test('withReceipts: true + stop() resets gate — second start() warns again on 
   expect(warnsAfterSecondStart).toHaveLength(2)
   tracker.stop()
 })
+
+// ---------- probeMined tests ----------
+//
+// Consumer-supplied mined probe (TrackOptions.probeMined). Runs every block
+// tick for every record that has a probe attached. No capability gate, no
+// tick counter, no policy gate — the probe IS the authority. Shares the
+// height-ordering rule + identity check + emit pipeline with the
+// receipt-poll-fallback path.
+
+test('probeMined — emits seen-in-block with source receipt-poll when probe returns inclusion', async () => {
+  const source = makeSource()
+  const probe = vi.fn(async (hash: string) =>
+    hash === '0xt'
+      ? { blockHash: '0xfromprobe', blockNumber: 0x42n }
+      : null,
+  )
+  const tracker = startTracker(source)
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), {
+    emitInitial: false,
+    probeMined: probe,
+  })
+
+  // Tx NOT in block.transactions — block-poll won't see it. The probe is
+  // what tells the tracker about inclusion.
+  source.emitBlock(makeBlock(0x10n, '0xtip10', []))
+  await flush()
+
+  const seen = events.find(
+    (e): e is import('./events.js').TxEventSeenInBlock =>
+      e.kind === 'seen-in-block',
+  )
+  expect(seen).toBeDefined()
+  expect(seen!.source).toBe('receipt-poll')
+  expect(seen!.blockHash).toBe('0xfromprobe')
+  expect(seen!.blockNumber).toBe(0x42n)
+  expect(seen!.transactionIndex).toBe(0)
+  expect(seen!.confirmations).toBe(1)
+  expect(probe).toHaveBeenCalledWith('0xt')
+
+  // Status mirror — getTxStatus reflects probe-derived inclusion.
+  const status = tracker.getTxStatus('0xt')
+  expect(status?.lastSeenInBlock).toMatchObject({
+    blockHash: '0xfromprobe',
+    blockNumber: 0x42n,
+    source: 'receipt-poll',
+  })
+  tracker.stop()
+})
+
+test('probeMined — returning null is a no-op', async () => {
+  const source = makeSource()
+  const probe = vi.fn(async () => null)
+  const tracker = startTracker(source)
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xunmined', (e) => events.push(e), {
+    emitInitial: false,
+    probeMined: probe,
+  })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+
+  expect(probe).toHaveBeenCalled()
+  expect(events.filter((e) => e.kind === 'seen-in-block')).toHaveLength(0)
+  tracker.stop()
+})
+
+test('probeMined — throwing routes through onError without emitting', async () => {
+  const onError = vi.fn()
+  const source = makeSource()
+  const probe = vi.fn(async () => {
+    throw new Error('indexer down')
+  })
+  const tracker = startTracker(source, { onError })
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xerr', (e) => events.push(e), {
+    emitInitial: false,
+    probeMined: probe,
+  })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+
+  expect(onError).toHaveBeenCalledWith(
+    'tx-tracker.probeMined',
+    expect.objectContaining({ message: 'indexer down' }),
+  )
+  expect(events.filter((e) => e.kind === 'seen-in-block')).toHaveLength(0)
+  tracker.stop()
+})
+
+test('probeMined — throwing with no onError configured is swallowed (optional-callback safety)', async () => {
+  // No `onError` on tracker options. The `onError?.(...)` call must
+  // safely no-op rather than throw on undefined access.
+  const source = makeSource()
+  const probe = vi.fn(async () => {
+    throw new Error('boom')
+  })
+  const tracker = startTracker(source) // intentionally no onError
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xboom', (e) => events.push(e), {
+    emitInitial: false,
+    probeMined: probe,
+  })
+
+  // Should not throw or unhandled-reject.
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+
+  expect(events.filter((e) => e.kind === 'seen-in-block')).toHaveLength(0)
+  tracker.stop()
+})
+
+test('probeMined — height-ordering rule: block-poll wins when probe reports same-or-older block', async () => {
+  // Block-poll records inclusion at block 0x10. The probe is also called
+  // and returns inclusion at the SAME block. Height-ordering rule
+  // (existingBlock.blockNumber >= result.blockNumber) means the probe's
+  // return is a no-op — exactly one seen-in-block event, from block-poll.
+  const source = makeSource()
+  const probe = vi.fn(async () =>
+    ({ blockHash: '0xprobestale', blockNumber: 0x10n }),
+  )
+  const tracker = startTracker(source)
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), {
+    emitInitial: false,
+    probeMined: probe,
+  })
+
+  source.emitBlock(
+    makeBlock(0x10n, '0xb10', [{ hash: '0xt', from: '0xs', nonce: '0x0' }]),
+  )
+  await flush()
+
+  const seenEvents = events.filter((e) => e.kind === 'seen-in-block')
+  expect(seenEvents).toHaveLength(1)
+  // Default caps in this suite use newHeads: 'subscription', so block-path
+  // observations are tagged 'subscription' rather than 'block-poll'. The
+  // assertion that matters is "not from the probe".
+  expect(seenEvents[0].source).not.toBe('receipt-poll')
+  expect(probe).toHaveBeenCalled()
+  expect(tracker.getTxStatus('0xt')?.lastSeenInBlock?.source).not.toBe(
+    'receipt-poll',
+  )
+  tracker.stop()
+})
+
+test('probeMined — probe reporting a strictly newer block than recorded wins (height-ordering coverage)', async () => {
+  // existingBlock IS set, but probe carries a strictly newer block. The
+  // height-ordering rule lets the probe's observation through. This is
+  // the exotic third arm of the `&&` in the height check — exists to
+  // pin coverage on it.
+  const source = makeSource()
+  let probeBlock = 0x10n
+  const probe = vi.fn(async () =>
+    ({ blockHash: '0xfromprobenew', blockNumber: probeBlock }),
+  )
+  const tracker = startTracker(source)
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), {
+    emitInitial: false,
+    probeMined: probe,
+  })
+
+  // Block 0x10: block-poll sees inclusion at 0x10. Probe also returns 0x10
+  // (same block) — no-op via height-ordering. After this, lastSeenInBlock = 0x10.
+  source.emitBlock(
+    makeBlock(0x10n, '0xb10', [{ hash: '0xt', from: '0xs', nonce: '0x0' }]),
+  )
+  await flush()
+
+  // Block 0x11: tx is NOT in this block. block-poll bumps confirmations to 2
+  // but doesn't change lastSeenInBlock. Now the probe returns 0x11 (newer
+  // than existing 0x10) — height check passes, probe's observation goes
+  // through, source becomes receipt-poll.
+  probeBlock = 0x11n
+  source.emitBlock(makeBlock(0x11n, '0xb11', [], '0xb10'))
+  await flush()
+
+  const seenFromProbe = events.find(
+    (e): e is import('./events.js').TxEventSeenInBlock =>
+      e.kind === 'seen-in-block' && e.source === 'receipt-poll',
+  )
+  expect(seenFromProbe).toBeDefined()
+  expect(seenFromProbe!.blockNumber).toBe(0x11n)
+  tracker.stop()
+})
+
+test('probeMined — first-set wins across multiple subscribes on the same hash', async () => {
+  const source = makeSource()
+  const firstProbe = vi.fn(async () =>
+    ({ blockHash: '0xfromfirst', blockNumber: 0x5n }),
+  )
+  const secondProbe = vi.fn(async () =>
+    ({ blockHash: '0xfromsecond', blockNumber: 0x5n }),
+  )
+  const tracker = startTracker(source)
+
+  // First subscribe attaches firstProbe.
+  tracker.subscribe('0xt', () => {}, {
+    emitInitial: false,
+    probeMined: firstProbe,
+  })
+  // Second subscribe on same hash with a different probe — ignored.
+  tracker.subscribe('0xt', () => {}, {
+    emitInitial: false,
+    probeMined: secondProbe,
+  })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+
+  expect(firstProbe).toHaveBeenCalled()
+  expect(secondProbe).not.toHaveBeenCalled()
+  tracker.stop()
+})
+
+test('probeMined — no probe attached means runMinedProbe early-returns (default state coverage)', async () => {
+  // A subscriber without probeMined leaves record.probeMined = null. The
+  // dispatch loop still iterates the record, but runMinedProbe returns
+  // immediately at `if (!probe) return`. Verifies the default state.
+  const source = makeSource()
+  const tracker = startTracker(source)
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xnoprobe', (e) => events.push(e), { emitInitial: false })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+
+  // No probe-derived seen-in-block.
+  expect(
+    events.filter(
+      (e) => e.kind === 'seen-in-block' && e.source === 'receipt-poll',
+    ),
+  ).toHaveLength(0)
+  tracker.stop()
+})
+
+test('probeMined — identity check: orphaned-mid-await probe does not emit on resubscribed record', async () => {
+  // Mirror of receipt-poll-fallback audit #6: the probe's await is in
+  // flight when the subscriber leaves (cleanupRecord drops the record),
+  // then a fresh subscribe on the same hash creates a new record. The
+  // probe's post-await emit must bail rather than fire on the orphaned
+  // closure (would otherwise leak a phantom event to globalSubs).
+  let resolveProbe: ((r: { blockHash: string; blockNumber: bigint } | null) => void) | null = null
+  const source = makeSource()
+  const probe = vi.fn(
+    () =>
+      new Promise<{ blockHash: string; blockNumber: bigint } | null>(
+        (resolve) => {
+          resolveProbe = resolve
+        },
+      ),
+  )
+  const tracker = startTracker(source)
+
+  const allEvents: import('./events.js').TxEvent[] = []
+  tracker.subscribeAll((e) => allEvents.push(e))
+
+  const unsubA = tracker.subscribe('0xt', () => {}, {
+    emitInitial: false,
+    probeMined: probe,
+  })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  // Yield once so the probe is in-flight awaiting our manual resolution.
+  await flush()
+  expect(resolveProbe).not.toBeNull()
+
+  // Mid-await: drop subscriber A, re-subscribe as A' (new record under
+  // the same hash, no probe this time).
+  unsubA()
+  const aPrimeEvents: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => aPrimeEvents.push(e), { emitInitial: false })
+
+  // Resolve the stale probe with inclusion data. Identity check must
+  // detect the record is no longer canonical and bail.
+  resolveProbe!({ blockHash: '0xstaleprobe', blockNumber: 0x99n })
+  await flush()
+  await flush()
+
+  // Neither A's stale closure nor globalSubs should have received a
+  // seen-in-block from the orphaned probe.
+  expect(
+    aPrimeEvents.find((e) => e.kind === 'seen-in-block'),
+  ).toBeUndefined()
+  const phantom = allEvents.find(
+    (e) => e.kind === 'seen-in-block' && e.source === 'receipt-poll',
+  )
+  expect(phantom).toBeUndefined()
+  tracker.stop()
+})
+
+test('probeMined — runs unconditionally every block (no tick counter, no capability gate)', async () => {
+  // Differentiator vs receipt-poll-fallback: probe runs on EVERY block,
+  // and runs even when capabilities() lacks receiptByHash. Three blocks
+  // → three probe invocations.
+  const degradedCaps: Capabilities = {
+    newHeads: 'subscription',
+    newPendingTransactions: 'poll-only',
+    txpoolContent: 'available',
+    receiptByHash: 'unavailable', // would gate receipt-poll-fallback
+    reprobeOnReconnect: true,
+  }
+  const source = makeSource({ initialCaps: degradedCaps })
+  const probe = vi.fn(async () => null)
+  const tracker = startTracker(source)
+
+  tracker.subscribe('0xt', () => {}, {
+    emitInitial: false,
+    probeMined: probe,
+  })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+  source.emitBlock(makeBlock(0x2n, '0xb2', [], '0xb1'))
+  await flush()
+  source.emitBlock(makeBlock(0x3n, '0xb3', [], '0xb2'))
+  await flush()
+
+  expect(probe).toHaveBeenCalledTimes(3)
+  tracker.stop()
+})
+
+test('probeMined — reorg invalidates probe-reported inclusion (vanished-from-block)', async () => {
+  // Integration with the reorg detector. The probe reports inclusion at
+  // block 0x10 / 0xb10a. A same-height-different-hash reorg lands
+  // (0x10 / 0xb10b). The vanished-from-block path walks every record
+  // whose lastSeenInBlock.blockNumber matches the divergence — regardless
+  // of which path wrote it. Pins the "reorg handling for free" claim.
+  const source = makeSource()
+  const probe = vi.fn(async (hash: string) =>
+    hash === '0xt'
+      ? { blockHash: '0xb10a', blockNumber: 0x10n }
+      : null,
+  )
+  const tracker = startTracker(source)
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), {
+    emitInitial: false,
+    probeMined: probe,
+  })
+
+  // First block: probe reports inclusion at 0xb10a (tx not in block.txs).
+  source.emitBlock(makeBlock(0x10n, '0xb10a', [], '0x9'))
+  await flush()
+
+  const seenFromProbe = events.find(
+    (e): e is import('./events.js').TxEventSeenInBlock =>
+      e.kind === 'seen-in-block' && e.source === 'receipt-poll',
+  )
+  expect(seenFromProbe).toBeDefined()
+
+  // Make the probe stop returning the stale block — the indexer would
+  // have reorganized too. Otherwise the post-vanish block tick would
+  // re-emit a seen-in-block, defeating the test's intent.
+  probe.mockResolvedValue(null)
+
+  // Same-height-different-hash reorg lands: 0x10 / 0xb10b. The reorg
+  // detector compares against the pre-update ring (which has 0xb10a at
+  // height 0x10) and emits vanished-from-block on every record whose
+  // lastSeenInBlock points at 0xb10a.
+  source.emitBlock(makeBlock(0x10n, '0xb10b', [], '0x9'))
+  await flush()
+
+  const vanished = events.find((e) => e.kind === 'vanished-from-block')
+  expect(vanished).toBeDefined()
+  expect(tracker.getTxStatus('0xt')?.lastSeenInBlock).toBeNull()
+  tracker.stop()
+})

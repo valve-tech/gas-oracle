@@ -139,9 +139,13 @@ export interface PollOptions {
  *
  * `'block-poll'` and `'mempool-snapshot'` indicate the source's
  * own poll cycle pulled the data via `eth_getBlockByNumber` /
- * `txpool_content` respectively. `'receipt-poll'` is reserved for
- * downstream consumers (tx-tracker) that fall back to per-hash
- * receipt polling when a higher-authority path is missing.
+ * `txpool_content` respectively. `'receipt-poll'` covers any per-hash
+ * mined check that isn't the source's own block-poll — the tx-tracker
+ * uses it for both the RPC `receipt-poll-fallback` lost-signal policy
+ * AND consumer-supplied probes (`TrackOptions.probeMined`) that
+ * forward inclusion data from an indexer or other downstream source.
+ * Receipt-poll observations cannot authoritatively detect reorgs
+ * (spec §12.3 — `buildVanishedFromBlock` rejects this source).
  */
 export type EventSource =
   | 'subscription'

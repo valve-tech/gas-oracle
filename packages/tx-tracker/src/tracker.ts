@@ -112,6 +112,37 @@ export type LostSignalPolicy =
   | { strategy: 'receipt-poll-fallback'; pollEveryBlocks: number }
 
 /**
+ * Probe return shape. The tracker emits `seen-in-block` with
+ * `transactionIndex: 0` and `confirmations: 1`; the consumer's authoritative
+ * tip is the tracker's, so confirmations are derived, not supplied.
+ */
+export type ProbeMinedResult = {
+  blockHash: string
+  blockNumber: bigint
+}
+
+/**
+ * Consumer-supplied mined-detection probe. Attached per-subscription via
+ * {@link TrackOptions.probeMined}. The tracker dispatches it for the tracked
+ * hash on every block tick, in addition to its own block-poll inclusion check.
+ *
+ *   - Return `null` when the probe can't confirm inclusion. Probe throws are
+ *     routed through `onError` and treated as null.
+ *   - Whichever path — block-poll or probe — reports a strictly newer
+ *     inclusion wins; the existing height-ordering rule prevents the
+ *     lower-authority arrival from clobbering the higher.
+ *
+ * The probe is NOT permitted to drive reorg / vanished-from-block events
+ * (spec §12.3) — divergence detection stays anchored on the source's block
+ * stream where the parent-hash chain is authoritative.
+ *
+ * Probe-derived observations emit `seen-in-block` with
+ * `source: 'receipt-poll'` (widened to mean "any per-hash mined check that
+ * isn't the source's own block-poll"; see chain-source `EventSource` docs).
+ */
+export type ProbeMined = (hash: Hash) => Promise<ProbeMinedResult | null>
+
+/**
  * Per-subscription overrides on top of the tracker defaults. See
  * spec §5.4.
  */
@@ -149,6 +180,14 @@ export interface TrackOptions {
    * is absent and a one-shot warning surfaces via onError.
    */
   withReceipts?: boolean
+
+  /**
+   * Consumer-supplied mined-detection probe. See {@link ProbeMined}.
+   * First-set wins across subscriptions on the same hash — once attached,
+   * subsequent subscribes on the same hash with a different probe are
+   * ignored (mirrors the {@link TrackOptions.lostSignalPolicy} contract).
+   */
+  probeMined?: ProbeMined
 }
 
 /** Bulk subscription options — extends per-hash `TrackOptions`. */
@@ -342,6 +381,8 @@ interface TrackedRecord {
    * future events get them).
    */
   withReceipts: boolean
+  /** Per-subscription mined probe; first-set wins. */
+  probeMined: ProbeMined | null
 }
 
 interface BulkSub {
@@ -570,6 +611,7 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
       hasDurableSub: false,
       persisted: [],
       withReceipts: false,
+      probeMined: null,
     }
     tracked.set(hash, record)
     return record
@@ -702,6 +744,87 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
       lastSeenInBlock: {
         blockHash: receipt.blockHash,
         blockNumber: receiptBlockNumber,
+        transactionIndex: 0,
+        confirmations: 1,
+        source: 'receipt-poll',
+      },
+      lastObservedAtBlock: tipBlockNumber,
+    }
+  }
+
+  // -------------------------------------------------------------
+  // Consumer-supplied mined probe (TrackOptions.probeMined)
+  // -------------------------------------------------------------
+
+  /**
+   * Per-record mined probe. Mirrors the merge contract of
+   * `runReceiptPollFallback` (height-ordering rule, identity check,
+   * emit through the same `seen-in-block` pipeline) but differs in
+   * three structural ways:
+   *
+   *   - No capability gate — the consumer's probe IS the authority.
+   *   - No tick counter — the probe runs every block; consumers
+   *     debounce internally if needed.
+   *   - First-set-wins per record, so the probe is bound to the
+   *     record on the first attaching subscription.
+   *
+   * The probe is NOT permitted to drive reorg / vanished-from-block
+   * events (spec §12.3). A positive return is treated as a
+   * `seen-in-block` candidate; divergence detection stays on the
+   * source's block stream where the parent-hash chain is authoritative.
+   */
+  const runMinedProbe = async (
+    record: TrackedRecord,
+    tipBlockNumber: bigint,
+  ): Promise<void> => {
+    const probe = record.probeMined
+    if (!probe) return
+
+    let result: ProbeMinedResult | null = null
+    try {
+      result = await probe(record.hash)
+    } catch (err) {
+      onError?.('tx-tracker.probeMined', err)
+      return
+    }
+    if (!result) return
+
+    // Height-ordering rule (same shape as runReceiptPollFallback line ~670):
+    // only update when the probe carries a block strictly newer than what
+    // we've already recorded from any path.
+    const existingBlock = record.status.lastSeenInBlock
+    if (existingBlock && existingBlock.blockNumber >= result.blockNumber) {
+      return
+    }
+
+    // Identity check: record was unsubscribed (and possibly re-subscribed)
+    // while the probe was in flight. Bail rather than emit on an orphaned
+    // record — emitting via the old closure would fire a phantom event on
+    // globalSubs that the new per-hash subscribers never see.
+    if (tracked.get(record.hash) !== record) return
+
+    emit(
+      record,
+      buildSeenInBlock({
+        hash: record.hash,
+        chainId,
+        source: 'receipt-poll',
+        at: { blockNumber: tipBlockNumber, timestamp: latestTipTimestamp },
+        blockHash: result.blockHash,
+        blockNumber: result.blockNumber,
+        transactionIndex: 0,
+        confirmations: 1,
+      }),
+    )
+    // Mirror state-machine bookkeeping so getTxStatus reflects inclusion.
+    // lastObservedAtBlock advances with the tip (not the probe's inclusion
+    // block) so the retention window expiry tracks chain time, matching
+    // runReceiptPollFallback semantics.
+    record.status = {
+      ...record.status,
+      lastSeenInBlock: {
+        blockHash: result.blockHash,
+        blockNumber: result.blockNumber,
         transactionIndex: 0,
         confirmations: 1,
         source: 'receipt-poll',
@@ -909,6 +1032,7 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     // `latestTip` is always set to `newTip` above before this loop runs.
     for (const record of tracked.values()) {
       void runReceiptPollFallback(record, latestTip.number)
+      void runMinedProbe(record, latestTip.number)
     }
   }
 
@@ -1212,6 +1336,9 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     if (opts.lostSignalPolicy && record.lostSignalPolicy === null) {
       record.lostSignalPolicy = opts.lostSignalPolicy
     }
+    if (opts.probeMined && record.probeMined === null) {
+      record.probeMined = opts.probeMined
+    }
     if (opts.withReceipts === true) {
       record.withReceipts = true
     }
@@ -1487,6 +1614,10 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
         hasDurableSub: true,
         persisted: persisted.subscriptions,
         withReceipts: false,
+        // Probes are closures and not serializable; durable records
+        // get no probe until a fresh subscribe attaches one. See spec
+        // §13.2 (predicate selectors are non-durable for the same reason).
+        probeMined: null,
       }
       tracked.set(persisted.hash, record)
     }
