@@ -27,6 +27,7 @@ import {
   buildSignalRecovered,
   buildStarted,
   buildStopped,
+  buildConfirmedTerminal,
   buildUnseenForNBlocks,
   buildVanishedFromBlock,
 } from './events.js'
@@ -130,6 +131,14 @@ test('buildUnseenForNBlocks carries the consecutive-block count', () => {
   const e = buildUnseenForNBlocks({ ...ENVELOPE, blocks: 30 })
   expect(e.kind).toBe('unseen-for-N-blocks')
   expect(e.blocks).toBe(30)
+})
+
+test('buildConfirmedTerminal carries the threshold confirmations', () => {
+  const e = buildConfirmedTerminal({ ...ENVELOPE, confirmations: 12 })
+  expect(e.kind).toBe('confirmed-terminal')
+  expect(e.confirmations).toBe(12)
+  expect(e.hash).toBe(ENVELOPE.hash)
+  expect(e.source).toBe(ENVELOPE.source)
 })
 
 test('buildSignalDegraded carries lost capability + fallback source', () => {

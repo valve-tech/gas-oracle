@@ -21,6 +21,7 @@
 import type { EventSource, RawTx, TransactionReceipt } from '@valve-tech/chain-source'
 
 import {
+  buildConfirmedTerminal,
   buildLeftMempool,
   buildReplacedBy,
   buildSeenInBlock,
@@ -110,6 +111,15 @@ export interface BlockObservationInput {
    * receipt without a follow-up re-emit.
    */
   prefetchedReceipts?: ReadonlyMap<Hash, TransactionReceipt>
+  /**
+   * Threshold for the mined-and-confirmed terminal transition. When
+   * non-null and the record's confirmations reach this value, the
+   * record is marked terminal (anchored on the current block, same
+   * pattern as the other terminal arms) and `confirmed-terminal`
+   * fires exactly once. `null` preserves the v0.14 behavior of never
+   * setting terminal via the mined path.
+   */
+  confirmationsForTerminal: number | null
 }
 
 /**
@@ -146,7 +156,18 @@ export const decideBlockObservation = (
     envelope,
     previousTipNumber,
     prefetchedReceipts,
+    confirmationsForTerminal,
   } = input
+
+  // Helper for the mined-confirmed terminal transition (v0.15+).
+  // Returns true when the current confirmations reach the configured
+  // threshold AND the record hasn't already gone terminal via any
+  // other path. The check is symmetric in Paths 1 + 2 since both
+  // produce a fresh `confirmations` value on this tick.
+  const reachedConfirmedTerminal = (confirmations: number): boolean =>
+    confirmationsForTerminal != null &&
+    confirmations >= confirmationsForTerminal &&
+    record.status.terminalAtBlockNumber == null
 
   const wasSeenInThisBlock = txHashSet.has(record.hash)
 
@@ -173,21 +194,35 @@ export const decideBlockObservation = (
     const receipt = isFreshInclusion
       ? prefetchedReceipts?.get(record.hash)
       : undefined
-    const events: TxEvent[] = isFreshInclusion
-      ? [
-          buildSeenInBlock({
-            hash: record.hash,
-            chainId,
-            source: eventSource,
-            at: envelope,
-            blockHash,
-            blockNumber,
-            transactionIndex,
-            confirmations,
-            ...(receipt !== undefined ? { receipt } : {}),
-          }),
-        ]
-      : []
+    const terminalNow = reachedConfirmedTerminal(confirmations)
+    const events: TxEvent[] = [
+      ...(isFreshInclusion
+        ? [
+            buildSeenInBlock({
+              hash: record.hash,
+              chainId,
+              source: eventSource,
+              at: envelope,
+              blockHash,
+              blockNumber,
+              transactionIndex,
+              confirmations,
+              ...(receipt !== undefined ? { receipt } : {}),
+            }),
+          ]
+        : []),
+      ...(terminalNow
+        ? [
+            buildConfirmedTerminal({
+              hash: record.hash,
+              chainId,
+              source: eventSource,
+              at: envelope,
+              confirmations,
+            }),
+          ]
+        : []),
+    ]
     return {
       events,
       statusPatch: {
@@ -195,6 +230,7 @@ export const decideBlockObservation = (
         unseenStreak: 0,
         firstObservedAtBlock: record.status.firstObservedAtBlock ?? blockNumber,
         lastObservedAtBlock: blockNumber,
+        ...(terminalNow ? { terminalAtBlockNumber: blockNumber } : {}),
       },
       identityPatch: cacheIdentity(record.identity, tx),
       inMempoolPatch: null,
@@ -208,6 +244,7 @@ export const decideBlockObservation = (
       ...record.status.lastSeenInBlock,
       confirmations: bumped,
     }
+    const terminalNow = reachedConfirmedTerminal(bumped)
     return {
       events: [
         buildSeenInBlock({
@@ -220,10 +257,22 @@ export const decideBlockObservation = (
           transactionIndex: updated.transactionIndex,
           confirmations: bumped,
         }),
+        ...(terminalNow
+          ? [
+              buildConfirmedTerminal({
+                hash: record.hash,
+                chainId,
+                source: eventSource,
+                at: envelope,
+                confirmations: bumped,
+              }),
+            ]
+          : []),
       ],
       statusPatch: {
         lastSeenInBlock: updated,
         lastObservedAtBlock: blockNumber,
+        ...(terminalNow ? { terminalAtBlockNumber: blockNumber } : {}),
       },
       identityPatch: null,
       inMempoolPatch: null,

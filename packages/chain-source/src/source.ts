@@ -86,6 +86,7 @@ const PROBING_DEFAULT: Capabilities = {
   txpoolContent: 'gated',
   receiptByHash: 'unavailable',
   reprobeOnReconnect: false,
+  ready: false,
 }
 
 export interface CreateChainSourceOptions {
@@ -376,7 +377,11 @@ export const createChainSource = (
   const readyPromise: Promise<void> = probeCapabilities(options.client, {
     onError: options.onError,
   }).then((caps) => {
-    cachedCapabilities = caps
+    // Flip `ready` to true on first probe completion. Subsequent
+    // re-probes (WS reconnect) preserve `ready: true` — the probe
+    // updates field values in place, no flipping back to "probing"
+    // since downstream gates would briefly stall.
+    cachedCapabilities = { ...caps, ready: true }
   })
 
   // One poll cycle. Cheap `eth_blockNumber` probe + (optionally)

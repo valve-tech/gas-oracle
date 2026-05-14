@@ -49,9 +49,21 @@ export type {
   TxMatchEvent,
   TxSubscription,
   LostSignalPolicy,
+  ProbeMined,
+  ProbeMinedResult,
+  ProbeTransaction,
   GroupOptions,
   TxGroupSubscription,
 } from './tracker.js'
+
+export {
+  createLocalStorageTrackerStore,
+  deleteKeysStartingWith,
+} from './local-storage-store.js'
+export type {
+  LocalStorageLike,
+  LocalStorageTrackerStoreOptions,
+} from './local-storage-store.js'
 
 export {
   buildStarted,
@@ -61,6 +73,7 @@ export {
   buildVanishedFromBlock,
   buildReplacedBy,
   buildUnseenForNBlocks,
+  buildConfirmedTerminal,
   buildSignalDegraded,
   buildSignalRecovered,
   buildStopped,
@@ -79,6 +92,7 @@ export type {
   TxEventVanishedFromBlock,
   TxEventReplacedBy,
   TxEventUnseenForNBlocks,
+  TxEventConfirmedTerminal,
   TxEventSignalDegraded,
   TxEventSignalRecovered,
   TxEventStopped,

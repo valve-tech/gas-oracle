@@ -226,6 +226,25 @@ export interface TrackOptions {
    * wins across subscriptions on the same hash.
    */
   probeTransaction?: ProbeTransaction
+
+  /**
+   * Caller-provided stable identifier for the persisted subscription
+   * (only meaningful when `durable: true`). When set, repeated calls
+   * with the same `subscriptionId` are idempotent — the persisted
+   * subscription is recorded exactly once even across many subscribes
+   * (e.g. React component remounts, hot-reloads, page reloads with a
+   * cross-process store).
+   *
+   * Without an explicit id, the tracker auto-dedups by `(durable,
+   * selector)`: a second `subscribe` on the same hash with `durable: true`
+   * reuses the prior persisted entry rather than appending a duplicate.
+   * Use the explicit id when you need a stable handle to a specific
+   * persisted entry — e.g., a long-lived component lifecycle that wants
+   * to guarantee its persisted entry never multiplies.
+   *
+   * No-op when `durable` is falsy.
+   */
+  subscriptionId?: string
 }
 
 /** Bulk subscription options — extends per-hash `TrackOptions`. */
@@ -295,6 +314,27 @@ export interface CreateTxTrackerOptions {
   retentionBlocks?: number
   onError?: (method: string, err: unknown) => void
   lifecycle?: 'eager' | 'lazy'
+  /**
+   * Mined-and-confirmed terminal threshold. When non-null and a tracked
+   * record's `lastSeenInBlock.confirmations` reaches this value, the
+   * record transitions to terminal (`terminalAtBlockNumber` anchored on
+   * the current tip — same pattern as the existing replacement /
+   * unseen-for-N terminal arms) and `confirmed-terminal` fires once.
+   * The retention countdown then begins from that block.
+   *
+   * Pre-v0.15, normally-mined transactions never reached terminal —
+   * retention enforcement only fired on replacement or
+   * unseen-for-N-blocks paths, so successful txs accumulated in
+   * long-lived stores forever. `null` (default) preserves that
+   * behavior; opt in with a value `>= reorgDepthBlocks` to safely
+   * retire mined records past the reorg window.
+   *
+   * Validation: must be `null`, `undefined`, or a positive integer.
+   * Recommended: `≥ reorgDepthBlocks` (default reorg depth = 12) to
+   * avoid premature terminal during a same-height reorg unmining
+   * the tx.
+   */
+  confirmationsForTerminal?: number | null
   /**
    * Cadence for per-hash status polling via
    * `source.getTransaction(hash)` (`eth_getTransactionByHash`). Runs once
@@ -402,6 +442,57 @@ export interface TxTracker {
 // -----------------------------------------------------------------
 
 const DEFAULT_UNSEEN_THRESHOLD_BLOCKS = 30
+
+/**
+ * Dedup persisted subscriptions by `(durable, selector)` shape. Pre-v0.15
+ * stores may carry structurally-identical entries (same selector kind +
+ * address/hash + durable flag) accumulated from repeated subscribes;
+ * v0.15+ tracker dedups on insert, but historical records still need to
+ * be cleaned up on rehydration so the migrated state flows back via the
+ * next `store.put`. Predicate selectors carry a non-serializable
+ * function reference and aren't durable per spec §13.2 — they're keyed
+ * by id so any anomalous predicate entries in legacy stores stay
+ * distinct (defensive; shouldn't normally appear).
+ */
+const dedupPersistedSubscriptions = (
+  subs: ReadonlyArray<PersistedSubscription>,
+): PersistedSubscription[] => {
+  const seen = new Set<string>()
+  const result: PersistedSubscription[] = []
+  for (const sub of subs) {
+    const sel = sub.selector
+    let selectorKey: string
+    // Defensive: legacy persisted records (pre-current `selector`
+    // nesting) carry the discriminant fields flat at the top level —
+    // `selector` is undefined at runtime even though the type says
+    // otherwise. Treat such entries as distinct (keyed by id) so they
+    // pass through untouched; downstream code already handles legacy
+    // shapes via the per-field defensive reads (v0.11.x pattern).
+    if (!sel || typeof sel !== 'object') {
+      selectorKey = `legacy:${sub.id}`
+    } else {
+      switch (sel.kind) {
+        case 'hash':
+          selectorKey = `hash:${(sel as { hash: string }).hash}`
+          break
+        case 'from':
+          selectorKey = `from:${(sel as { address?: string }).address ?? ''}`
+          break
+        case 'to':
+          selectorKey = `to:${(sel as { address?: string }).address ?? ''}`
+          break
+        default:
+          // Predicate selectors aren't durable; keep distinct by id.
+          selectorKey = `predicate:${sub.id}`
+      }
+    }
+    const key = `${sub.durable ? '1' : '0'}:${selectorKey}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(sub)
+  }
+  return result
+}
 
 /**
  * Internal per-hash state. Stored in `tracked` map keyed by hash.
@@ -578,7 +669,21 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     onError,
     lifecycle = 'eager',
     statusPollEveryBlocks = 1,
+    confirmationsForTerminal = null,
   } = options
+
+  // Validate at construction — silent acceptance of zero/negative
+  // thresholds would silently disable retention or fire terminal on
+  // a not-yet-included tx. Both are footguns.
+  if (
+    confirmationsForTerminal != null &&
+    (!Number.isInteger(confirmationsForTerminal) ||
+      confirmationsForTerminal < 1)
+  ) {
+    throw new Error(
+      `createTxTracker: confirmationsForTerminal must be a positive integer or null (got ${String(confirmationsForTerminal)})`,
+    )
+  }
 
   const tracked = new Map<Hash, TrackedRecord>()
   const bulkSubs = new Map<string, BulkSub>()
@@ -746,7 +851,18 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     // Capability gate: if receiptByHash is unavailable, warn once and
     // fall back to emit-uncertain semantics (the signal-degraded path
     // already handles caller awareness).
-    if (source.capabilities().receiptByHash !== 'available') {
+    //
+    // The `caps.ready === false` short-circuit (v0.15+) avoids a
+    // spurious cold-start warning before the source's capability probe
+    // resolves: prior to v0.15, conservative pre-probe defaults set
+    // `receiptByHash: 'unavailable'`, which made this gate fire its
+    // "permanently unavailable" warning for an RPC that ultimately
+    // supports the method. Skipping silently while probing means the
+    // warning only fires when the probe has completed and reported the
+    // capability as genuinely missing.
+    const caps = source.capabilities()
+    if (caps.ready === false) return
+    if (caps.receiptByHash !== 'available') {
       if (!receiptPollGateWarned) {
         receiptPollGateWarned = true
         onError?.(
@@ -1251,14 +1367,16 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
         envelope,
         previousTipNumber,
         prefetchedReceipts,
+        confirmationsForTerminal,
       })
       applyObservationResult(record, result)
       for (const event of result.events) emit(record, event)
     }
 
     // Retention enforcement (spec §10, audit #2). Records that have
-    // reached a terminal state (`replaced-by` or `unseen-for-N-blocks`
-    // emitted) carry `terminalAtBlockNumber`. Once the chain has
+    // reached a terminal state — `replaced-by`, `unseen-for-N-blocks`,
+    // or `confirmed-terminal` (v0.15+) — carry `terminalAtBlockNumber`.
+    // Once the chain has
     // moved `retentionBlocks` past that point, drop the record and
     // emit `Stopped({ reason: 'retention-expired' })`. Records still
     // in flight (terminalAtBlockNumber === null) are NOT subject to
@@ -1624,13 +1742,29 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     }
     if (opts.durable) {
       record.hasDurableSub = true
-      const subId = `sub-${nextSubId++}`
-      record.persisted.push({
-        id: subId,
-        durable: true,
-        selector: { kind: 'hash', hash },
-      })
-      void store.put(toRecord(record)).catch((err) => onError?.('store.put', err))
+      // Dedup: an explicit subscriptionId matches by id; without one,
+      // auto-dedup by selector (only `kind: 'hash'` here since this
+      // is the per-hash subscribe path). Pre-v0.15 every call pushed
+      // unconditionally, so React component remounts and cross-process
+      // restarts accumulated structurally-identical persisted entries —
+      // identical work, fan-out duplication, store bloat.
+      const desiredId = opts.subscriptionId
+      const existing = desiredId !== undefined
+        ? record.persisted.find((p) => p.id === desiredId)
+        : record.persisted.find(
+            (p) => p.selector.kind === 'hash' && p.selector.hash === hash,
+          )
+      if (!existing) {
+        const subId = desiredId ?? `sub-${nextSubId++}`
+        record.persisted.push({
+          id: subId,
+          durable: true,
+          selector: { kind: 'hash', hash },
+        })
+        void store
+          .put(toRecord(record))
+          .catch((err) => onError?.('store.put', err))
+      }
     }
 
     const unsub = record.subs.subscribe(cb)
@@ -1883,6 +2017,12 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
       // re-created the record between start() and rehydration
       // resolving.
       if (tracked.has(persisted.hash)) continue
+      // Dedup persisted subscriptions read back from the store. Pre-v0.15
+      // stores accumulated structurally-identical entries from repeated
+      // subscribes. Self-healing migration: if dedup shrank the list,
+      // immediately re-persist the cleaned record so the store reflects
+      // the migrated state even when no subsequent emit/subscribe occurs.
+      const dedupedSubs = dedupPersistedSubscriptions(persisted.subscriptions)
       const record: TrackedRecord = {
         hash: persisted.hash,
         status: persisted.status,
@@ -1892,7 +2032,7 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
         unseenThresholdBlocks,
         lostSignalPolicy: null,
         hasDurableSub: true,
-        persisted: persisted.subscriptions,
+        persisted: dedupedSubs,
         withReceipts: false,
         // Probes are closures and not serializable; durable records
         // get no probe until a fresh subscribe attaches one. See spec
@@ -1903,6 +2043,11 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
         statusPollTicksSince: 0,
       }
       tracked.set(persisted.hash, record)
+      if (dedupedSubs.length !== persisted.subscriptions.length) {
+        void store
+          .put(toRecord(record))
+          .catch((err) => onError?.('store.put', err))
+      }
     }
   }
 

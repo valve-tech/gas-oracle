@@ -3966,3 +3966,531 @@ test('statusPoll — identity primed from pending observation unblocks replaceme
   }
   tracker.stop()
 })
+
+// ---------- confirmationsForTerminal tests ----------
+//
+// Closes the "normally-mined records leak forever" bug (v0.14 and
+// earlier). When configured, the tracker promotes a record to terminal
+// (`terminalAtBlockNumber`) the first block its confirmations reach the
+// threshold, then retention cleanup begins. The `confirmed-terminal`
+// event fires alongside.
+
+test('confirmationsForTerminal — Path 2 (bump): terminal fires when confirmations reach threshold', async () => {
+  const source = makeSource()
+  const tracker = startTracker(source, { confirmationsForTerminal: 3 })
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), { emitInitial: false })
+
+  // Block 1: tx mined; confirmations=1. Not yet terminal.
+  source.emitBlock(
+    makeBlock(1n, '0xb1', [{ hash: '0xt', from: '0xs', nonce: '0x0' }]),
+  )
+  await flush()
+  expect(tracker.getTxStatus('0xt')?.terminalAtBlockNumber).toBeNull()
+  expect(events.find((e) => e.kind === 'confirmed-terminal')).toBeUndefined()
+
+  // Block 2: not in block; confirmations bumps to 2.
+  source.emitBlock(makeBlock(2n, '0xb2', [], '0xb1'))
+  await flush()
+  expect(tracker.getTxStatus('0xt')?.terminalAtBlockNumber).toBeNull()
+
+  // Block 3: confirmations bumps to 3. Threshold reached — terminal +
+  // confirmed-terminal event fires.
+  source.emitBlock(makeBlock(3n, '0xb3', [], '0xb2'))
+  await flush()
+  const status = tracker.getTxStatus('0xt')
+  expect(status?.terminalAtBlockNumber).toBe(3n)
+  const terminal = events.find((e) => e.kind === 'confirmed-terminal')
+  expect(terminal).toBeDefined()
+  if (terminal && terminal.kind === 'confirmed-terminal') {
+    expect(terminal.confirmations).toBe(3)
+  }
+  tracker.stop()
+})
+
+test('confirmationsForTerminal — Path 1 (fresh inclusion): terminal fires immediately when threshold=1', async () => {
+  const source = makeSource()
+  const tracker = startTracker(source, { confirmationsForTerminal: 1 })
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), { emitInitial: false })
+
+  source.emitBlock(
+    makeBlock(10n, '0xb10', [{ hash: '0xt', from: '0xs', nonce: '0x0' }]),
+  )
+  await flush()
+
+  const terminal = events.find((e) => e.kind === 'confirmed-terminal')
+  expect(terminal).toBeDefined()
+  expect(tracker.getTxStatus('0xt')?.terminalAtBlockNumber).toBe(10n)
+  tracker.stop()
+})
+
+test('confirmationsForTerminal — fires only once per record (idempotent across subsequent confirmation bumps)', async () => {
+  const source = makeSource()
+  const tracker = startTracker(source, { confirmationsForTerminal: 2 })
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), { emitInitial: false })
+
+  source.emitBlock(
+    makeBlock(1n, '0xb1', [{ hash: '0xt', from: '0xs', nonce: '0x0' }]),
+  )
+  await flush()
+  source.emitBlock(makeBlock(2n, '0xb2', [], '0xb1'))
+  await flush()
+  source.emitBlock(makeBlock(3n, '0xb3', [], '0xb2'))
+  await flush()
+  source.emitBlock(makeBlock(4n, '0xb4', [], '0xb3'))
+  await flush()
+
+  const terminalEvents = events.filter((e) => e.kind === 'confirmed-terminal')
+  expect(terminalEvents).toHaveLength(1)
+  tracker.stop()
+})
+
+test('confirmationsForTerminal — null preserves v0.14 behavior (mined records never go terminal)', async () => {
+  const source = makeSource()
+  const tracker = startTracker(source) // default null
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), { emitInitial: false })
+
+  source.emitBlock(
+    makeBlock(1n, '0xb1', [{ hash: '0xt', from: '0xs', nonce: '0x0' }]),
+  )
+  await flush()
+  for (let i = 2n; i <= 20n; i++) {
+    source.emitBlock(makeBlock(i, `0xb${i}`, [], `0xb${i - 1n}`))
+    await flush()
+  }
+
+  expect(tracker.getTxStatus('0xt')?.terminalAtBlockNumber).toBeNull()
+  expect(events.find((e) => e.kind === 'confirmed-terminal')).toBeUndefined()
+  tracker.stop()
+})
+
+test('confirmationsForTerminal — already-terminal records skip the mined transition', async () => {
+  // If a record reached terminal via another path (replacement,
+  // unseen-for-N), the confirmationsForTerminal gate should NOT
+  // overwrite the existing terminal anchor or re-fire the event.
+  const source = makeSource()
+  const tracker = startTracker(source, { confirmationsForTerminal: 1 })
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), { emitInitial: false })
+
+  // Drive a replacement via the mempool path: original 0xt at (0xs, 0)
+  // gets replaced by 0xt2.
+  source.emitMempool({
+    pending: {
+      '0xs': { '0': { hash: '0xt', from: '0xs', nonce: '0x0' } },
+    },
+    queued: {},
+  })
+  await flush()
+  source.emitMempool({
+    pending: {
+      '0xs': { '0': { hash: '0xt2', from: '0xs', nonce: '0x0' } },
+    },
+    queued: {},
+  })
+  await flush()
+  expect(tracker.getTxStatus('0xt')?.terminalAtBlockNumber).not.toBeNull()
+  const terminalAfterReplace = tracker.getTxStatus('0xt')?.terminalAtBlockNumber
+
+  // Now the (rare) case: a block confirms the original at 0xb1. Since
+  // terminal already set, no new confirmed-terminal event should fire.
+  source.emitBlock(
+    makeBlock(5n, '0xb5', [{ hash: '0xt', from: '0xs', nonce: '0x0' }]),
+  )
+  await flush()
+  expect(tracker.getTxStatus('0xt')?.terminalAtBlockNumber).toBe(
+    terminalAfterReplace,
+  )
+  expect(events.filter((e) => e.kind === 'confirmed-terminal')).toHaveLength(
+    0,
+  )
+  tracker.stop()
+})
+
+test('confirmationsForTerminal — validation: negative throws at construction', () => {
+  const source = makeSource()
+  expect(() =>
+    createTxTracker({ source, chainId: 1, confirmationsForTerminal: -1 }),
+  ).toThrow(/positive integer/)
+})
+
+test('confirmationsForTerminal — validation: zero throws at construction', () => {
+  const source = makeSource()
+  expect(() =>
+    createTxTracker({ source, chainId: 1, confirmationsForTerminal: 0 }),
+  ).toThrow(/positive integer/)
+})
+
+test('confirmationsForTerminal — validation: non-integer throws at construction', () => {
+  const source = makeSource()
+  expect(() =>
+    createTxTracker({ source, chainId: 1, confirmationsForTerminal: 1.5 }),
+  ).toThrow(/positive integer/)
+})
+
+test('confirmationsForTerminal — validation: undefined is accepted (treated as null)', () => {
+  const source = makeSource()
+  expect(() =>
+    createTxTracker({
+      source,
+      chainId: 1,
+      confirmationsForTerminal: undefined,
+    }),
+  ).not.toThrow()
+})
+
+// ---------- subscriptionId / persisted-subscription dedup tests ----------
+
+test('subscribe dedup — repeated durable subscribes on the same hash yield ONE persisted entry', async () => {
+  const store = createInMemoryStore()
+  const source = makeSource()
+  const tracker = startTracker(source, { store })
+
+  for (let i = 0; i < 5; i++) {
+    tracker.subscribe('0xfoo', () => {}, { emitInitial: false, durable: true })
+  }
+  // Force a store write so the deduplicated state is observable.
+  await flush()
+
+  const rec = await store.get(1, '0xfoo')
+  expect(rec?.subscriptions).toHaveLength(1)
+  tracker.stop()
+})
+
+test('subscribe dedup — explicit subscriptionId is reused on repeated calls', async () => {
+  const store = createInMemoryStore()
+  const source = makeSource()
+  const tracker = startTracker(source, { store })
+
+  for (let i = 0; i < 5; i++) {
+    tracker.subscribe('0xfoo', () => {}, {
+      emitInitial: false,
+      durable: true,
+      subscriptionId: 'my-component',
+    })
+  }
+  await flush()
+
+  const rec = await store.get(1, '0xfoo')
+  expect(rec?.subscriptions).toHaveLength(1)
+  expect(rec?.subscriptions[0].id).toBe('my-component')
+  tracker.stop()
+})
+
+test('subscribe dedup — different subscriptionIds produce distinct entries', async () => {
+  const store = createInMemoryStore()
+  const source = makeSource()
+  const tracker = startTracker(source, { store })
+
+  tracker.subscribe('0xfoo', () => {}, {
+    emitInitial: false,
+    durable: true,
+    subscriptionId: 'comp-a',
+  })
+  tracker.subscribe('0xfoo', () => {}, {
+    emitInitial: false,
+    durable: true,
+    subscriptionId: 'comp-b',
+  })
+  await flush()
+
+  const rec = await store.get(1, '0xfoo')
+  expect(rec?.subscriptions.map((s) => s.id).sort()).toEqual([
+    'comp-a',
+    'comp-b',
+  ])
+  tracker.stop()
+})
+
+test('rehydration dedup — legacy duplicate entries collapse on next start', async () => {
+  const store = createInMemoryStore()
+  // Seed the store with structurally-identical entries that pre-v0.15
+  // accumulated from repeated subscribes.
+  await store.put({
+    chainId: 1,
+    hash: '0xlegacy',
+    status: {
+      hash: '0xlegacy',
+      chainId: 1,
+      lastSeenInBlock: null,
+      lastSeenInMempool: null,
+      replacedBy: null,
+      vanishedAt: null,
+      unseenStreak: 0,
+      firstObservedAtBlock: null,
+      lastObservedAtBlock: null,
+      terminalAtBlockNumber: null,
+      capabilities: {
+        newHeads: 'subscription',
+        newPendingTransactions: 'poll-only',
+        txpoolContent: 'available',
+        receiptByHash: 'available',
+        reprobeOnReconnect: true,
+      },
+    },
+    firstSeenBlockNumber: 0n,
+    lastObservedBlockNumber: 0n,
+    retentionExpiresAtBlockNumber: 64n,
+    subscriptions: [
+      {
+        id: 'sub-1',
+        durable: true,
+        selector: { kind: 'hash', hash: '0xlegacy' },
+      },
+      {
+        id: 'sub-2',
+        durable: true,
+        selector: { kind: 'hash', hash: '0xlegacy' },
+      },
+      {
+        id: 'sub-3',
+        durable: true,
+        selector: { kind: 'hash', hash: '0xlegacy' },
+      },
+    ],
+  })
+  const source = makeSource()
+  const tracker = createTxTracker({ source, chainId: 1, store })
+  tracker.start()
+  await tracker.ready()
+  // Trigger a put so the dedupd subscriptions list lands back in the store.
+  tracker.subscribe('0xlegacy', () => {}, {
+    emitInitial: false,
+    durable: true,
+  })
+  await flush()
+
+  const rec = await store.get(1, '0xlegacy')
+  // 3 legacy entries collapsed to 1; new subscribe also dedups against it.
+  expect(rec?.subscriptions).toHaveLength(1)
+  tracker.stop()
+})
+
+test('rehydration dedup — from/to selectors with missing address default the dedup key to empty string', async () => {
+  // Coverage for the `?? ''` fallback on from/to selectors. Persisted
+  // entries with `address: undefined` shouldn't crash the dedup
+  // helper; they collapse together by sharing the empty-string key.
+  const store = createInMemoryStore()
+  await store.put({
+    chainId: 1,
+    hash: '0xmissing-addr',
+    status: {
+      hash: '0xmissing-addr',
+      chainId: 1,
+      lastSeenInBlock: null,
+      lastSeenInMempool: null,
+      replacedBy: null,
+      vanishedAt: null,
+      unseenStreak: 0,
+      firstObservedAtBlock: null,
+      lastObservedAtBlock: null,
+      terminalAtBlockNumber: null,
+      capabilities: {
+        newHeads: 'subscription',
+        newPendingTransactions: 'poll-only',
+        txpoolContent: 'available',
+        receiptByHash: 'available',
+        reprobeOnReconnect: true,
+      },
+    },
+    firstSeenBlockNumber: 0n,
+    lastObservedBlockNumber: 0n,
+    retentionExpiresAtBlockNumber: 64n,
+    subscriptions: [
+      // from with no address — two of these dedup to one.
+      { id: 'f1', durable: true, selector: { kind: 'from' } },
+      { id: 'f2', durable: true, selector: { kind: 'from' } },
+      // to with no address — same treatment.
+      { id: 't1', durable: true, selector: { kind: 'to' } },
+      { id: 't2', durable: true, selector: { kind: 'to' } },
+      // Non-durable entry to cover the `durable: false` branch in the
+      // dedup key construction.
+      { id: 'n1', durable: false, selector: { kind: 'hash', hash: '0xn' } },
+    ],
+  })
+  const source = makeSource()
+  const tracker = createTxTracker({ source, chainId: 1, store })
+  tracker.start()
+  await tracker.ready()
+  await flush()
+
+  const rec = await store.get(1, '0xmissing-addr')
+  const subs = rec!.subscriptions
+  // 5 entries → 3 distinct keys (`from:`, `to:`, `hash:0xn` with `durable: 0`).
+  expect(subs).toHaveLength(3)
+  tracker.stop()
+})
+
+test('rehydration dedup — store.put failure during migration routes through onError', async () => {
+  // Coverage for the .catch arm on the migration write. A store
+  // that rejects put after listDurable must not crash rehydration —
+  // the error routes through onError and the in-memory state remains
+  // correctly deduplicated.
+  const onError = vi.fn()
+  const baseStore = createInMemoryStore()
+  await baseStore.put({
+    chainId: 1,
+    hash: '0xrehydrate-fail',
+    status: {
+      hash: '0xrehydrate-fail',
+      chainId: 1,
+      lastSeenInBlock: null,
+      lastSeenInMempool: null,
+      replacedBy: null,
+      vanishedAt: null,
+      unseenStreak: 0,
+      firstObservedAtBlock: null,
+      lastObservedAtBlock: null,
+      terminalAtBlockNumber: null,
+      capabilities: {
+        newHeads: 'subscription',
+        newPendingTransactions: 'poll-only',
+        txpoolContent: 'available',
+        receiptByHash: 'available',
+        reprobeOnReconnect: true,
+      },
+    },
+    firstSeenBlockNumber: 0n,
+    lastObservedBlockNumber: 0n,
+    retentionExpiresAtBlockNumber: 64n,
+    subscriptions: [
+      { id: 'a', durable: true, selector: { kind: 'hash', hash: '0xrehydrate-fail' } },
+      { id: 'b', durable: true, selector: { kind: 'hash', hash: '0xrehydrate-fail' } },
+    ],
+  })
+  // Wrap the base store: listDurable works, put rejects.
+  const flakyStore = {
+    ...baseStore,
+    put: () => Promise.reject(new Error('migration put failed')),
+  }
+  const source = makeSource()
+  const tracker = createTxTracker({
+    source,
+    chainId: 1,
+    store: flakyStore,
+    onError,
+  })
+  tracker.start()
+  await tracker.ready()
+  await flush()
+  await flush()
+
+  expect(onError).toHaveBeenCalledWith(
+    'store.put',
+    expect.objectContaining({ message: 'migration put failed' }),
+  )
+  tracker.stop()
+})
+
+test('rehydration dedup — distinct selector kinds (hash, from, to, predicate) preserved', async () => {
+  // Coverage for the selector switch arms in dedupPersistedSubscriptions.
+  const store = createInMemoryStore()
+  await store.put({
+    chainId: 1,
+    hash: '0xmixed',
+    status: {
+      hash: '0xmixed',
+      chainId: 1,
+      lastSeenInBlock: null,
+      lastSeenInMempool: null,
+      replacedBy: null,
+      vanishedAt: null,
+      unseenStreak: 0,
+      firstObservedAtBlock: null,
+      lastObservedAtBlock: null,
+      terminalAtBlockNumber: null,
+      capabilities: {
+        newHeads: 'subscription',
+        newPendingTransactions: 'poll-only',
+        txpoolContent: 'available',
+        receiptByHash: 'available',
+        reprobeOnReconnect: true,
+      },
+    },
+    firstSeenBlockNumber: 0n,
+    lastObservedBlockNumber: 0n,
+    retentionExpiresAtBlockNumber: 64n,
+    subscriptions: [
+      { id: 'h', durable: true, selector: { kind: 'hash', hash: '0xmixed' } },
+      { id: 'f', durable: true, selector: { kind: 'from', address: '0xa' } },
+      { id: 't', durable: true, selector: { kind: 'to', address: '0xb' } },
+      { id: 'p', durable: true, selector: { kind: 'predicate' } },
+      // Duplicate of each — should collapse to one of each.
+      { id: 'h2', durable: true, selector: { kind: 'hash', hash: '0xmixed' } },
+      { id: 'f2', durable: true, selector: { kind: 'from', address: '0xa' } },
+      { id: 't2', durable: true, selector: { kind: 'to', address: '0xb' } },
+      // Predicate selectors are non-durable per spec §13.2 — keyed by id,
+      // so distinct predicate entries stay distinct.
+      { id: 'p2', durable: true, selector: { kind: 'predicate' } },
+    ],
+  })
+  const source = makeSource()
+  const tracker = createTxTracker({ source, chainId: 1, store })
+  tracker.start()
+  await tracker.ready()
+  // Force a store write to land the deduped list.
+  tracker.subscribe('0xmixed', () => {}, {
+    emitInitial: false,
+    durable: true,
+  })
+  await flush()
+
+  const rec = await store.get(1, '0xmixed')
+  // hash/from/to deduped to one each; predicate entries kept distinct
+  // (id-keyed) + the new hash subscribe is the existing 'h' (dedup).
+  const kinds = rec!.subscriptions.map((s) => s.selector.kind)
+  expect(kinds.filter((k) => k === 'hash')).toHaveLength(1)
+  expect(kinds.filter((k) => k === 'from')).toHaveLength(1)
+  expect(kinds.filter((k) => k === 'to')).toHaveLength(1)
+  expect(kinds.filter((k) => k === 'predicate')).toHaveLength(2)
+  tracker.stop()
+})
+
+// ---------- caps.ready === false silence test ----------
+
+test('receipt-poll-fallback — silent when capabilities probe has not completed (ready: false)', async () => {
+  // Synthetic capabilities snapshot with `ready: false` simulates the
+  // pre-probe window. The receipt-poll-fallback path must skip without
+  // firing the "permanently unavailable" warning that would mislead
+  // consumers into thinking the RPC lacks support before the probe
+  // even completed.
+  const onError = vi.fn()
+  const probingCaps: Capabilities = {
+    newHeads: 'unavailable',
+    newPendingTransactions: 'unavailable',
+    txpoolContent: 'gated',
+    receiptByHash: 'unavailable',
+    reprobeOnReconnect: false,
+    ready: false,
+  }
+  const source = makeSource({ initialCaps: probingCaps })
+
+  const tracker = createTxTracker({
+    source,
+    chainId: 1,
+    lostSignalPolicy: { strategy: 'receipt-poll-fallback', pollEveryBlocks: 1 },
+    onError,
+  })
+  tracker.start()
+  tracker.subscribe('0xt', () => {}, { emitInitial: false })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+
+  // No warning fired — ready: false means "probe not complete yet,"
+  // not "permanently unavailable."
+  expect(
+    onError.mock.calls.filter(
+      ([m]) => m === 'tx-tracker.receipt-poll-fallback',
+    ),
+  ).toHaveLength(0)
+  tracker.stop()
+})

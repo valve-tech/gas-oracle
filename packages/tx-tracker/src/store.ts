@@ -107,7 +107,18 @@ export interface TxTrackerStore {
   /** Read the latest record for a hash. Returns null if absent. */
   get(chainId: number, hash: Hash): Promise<TrackedTxRecord | null>
 
-  /** Remove a hash. Called when the retention window expires. */
+  /**
+   * Remove a hash. Called when the retention window expires.
+   *
+   * **Contract: implementations must clear ALL state associated with
+   * the hash** — the record itself, the event log (if any), and any
+   * other per-hash keys the implementation maintains. A common bug in
+   * custom stores is forgetting to delete the event log alongside the
+   * record, leaving orphaned log entries that never expire. The
+   * first-party `createInMemoryStore` and
+   * `createLocalStorageTrackerStore` already enforce this; consumer
+   * implementations must do the same.
+   */
   delete(chainId: number, hash: Hash): Promise<void>
 
   /**

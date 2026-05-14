@@ -179,4 +179,22 @@ export interface Capabilities {
   receiptByHash: 'available' | 'unavailable'
   /** Whether transport reconnection re-probes (WS reconnect, etc.). */
   reprobeOnReconnect: boolean
+  /**
+   * `false` while the initial capability probe is in flight, `true` after
+   * it resolves (and stays `true` across `reprobeOnReconnect` re-probes —
+   * a re-probe updates field values in place without flipping back to
+   * `false`). Optional for backward compat — synthetic `Capabilities`
+   * literals in tests and consumer-side stubs that omit it should be
+   * read as "probe already completed" (i.e. authoritative field values).
+   *
+   * The conservative pre-probe defaults set every capability to its
+   * least-authoritative value, so a downstream gate like
+   * `caps.receiptByHash !== 'available'` cannot distinguish "the probe
+   * hasn't finished" from "the upstream RPC genuinely doesn't expose
+   * this method." Use `caps.ready === false` (loose-equality on the
+   * specific value) to skip such gates silently while the probe is in
+   * flight; once `ready === true` (or `undefined`, in synthetic
+   * literals), the field values are authoritative.
+   */
+  ready?: boolean
 }

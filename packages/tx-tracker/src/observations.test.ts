@@ -74,6 +74,7 @@ const blockInput = (overrides: {
   previousTipNumber?: bigint | null
   record?: ReadonlyTrackedRecord
   prefetchedReceipts?: ReadonlyMap<Hash, import('@valve-tech/chain-source').TransactionReceipt>
+  confirmationsForTerminal?: number | null
 } = {}) => {
   const txs = overrides.txs ?? [txInBlock()]
   const blockHash = overrides.blockHash ?? '0xb1'
@@ -89,6 +90,7 @@ const blockInput = (overrides: {
     envelope: ENVELOPE,
     previousTipNumber: overrides.previousTipNumber ?? null,
     prefetchedReceipts: overrides.prefetchedReceipts,
+    confirmationsForTerminal: overrides.confirmationsForTerminal ?? null,
   }
 }
 

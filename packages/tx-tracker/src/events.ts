@@ -168,6 +168,24 @@ export interface TxEventUnseenForNBlocks extends Envelope {
 }
 
 /**
+ * Mined-and-confirmed terminal — fires when an included tx's
+ * `confirmations` reaches the `confirmationsForTerminal` threshold
+ * configured on the tracker. Marks the record as terminal for
+ * retention purposes (the existing terminal anchors are
+ * replacement and unseen-for-N-blocks; v0.15 closes the gap where a
+ * normally-mined tx never goes terminal and leaks records in
+ * long-lived stores). Carries the confirmations count that triggered
+ * the transition so consumers can gate downstream UI cleanup off the
+ * same event. Fires exactly once per record — the
+ * `terminalAtBlockNumber == null` gate on the decision arm dedups
+ * subsequent confirmation bumps.
+ */
+export interface TxEventConfirmedTerminal extends Envelope {
+  kind: 'confirmed-terminal'
+  confirmations: number
+}
+
+/**
  * A capability the tracker had been relying on for this hash is
  * no longer authoritative — typically because the WS subscription
  * dropped or `txpool_content` was newly gated. Tracking continues
@@ -217,6 +235,7 @@ export type TxEvent =
   | TxEventVanishedFromBlock
   | TxEventReplacedBy
   | TxEventUnseenForNBlocks
+  | TxEventConfirmedTerminal
   | TxEventSignalDegraded
   | TxEventSignalRecovered
   | TxEventStopped
@@ -386,6 +405,15 @@ export const buildUnseenForNBlocks = (
   ...makeEnvelope(input),
   kind: 'unseen-for-N-blocks',
   blocks: input.blocks,
+})
+
+/** Build a `confirmed-terminal` event. */
+export const buildConfirmedTerminal = (
+  input: Envelope & { confirmations: number },
+): TxEventConfirmedTerminal => ({
+  ...makeEnvelope(input),
+  kind: 'confirmed-terminal',
+  confirmations: input.confirmations,
 })
 
 /** Build a `signal-degraded` event. */
