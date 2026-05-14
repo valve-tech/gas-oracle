@@ -6,6 +6,37 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.15.0] — 2026-05-14
+
+### Added
+
+- **`Capabilities.ready?: boolean`** — new optional field on the
+  Capabilities interface. `false` while the initial `probeCapabilities`
+  run is in flight; `true` after it resolves (and stays `true` across
+  `reprobeOnReconnect` re-probes — re-probes update field values in
+  place without flipping back). Distinguishes "probe not yet completed"
+  from "upstream RPC genuinely doesn't support this method," which
+  pre-v0.15 were collapsed into one value via the conservative
+  pre-probe defaults.
+  Optional for backward compatibility: synthetic Capabilities literals
+  in tests and consumer stubs that omit it should be read as "probe
+  already completed" (i.e., authoritative field values). Downstream
+  gates should use `caps.ready === false` (specific loose-equality) to
+  detect the probing state; `undefined` is treated as "ready."
+
+### Notes
+
+- Motivated by a tx-tracker cold-start ergonomic issue:
+  `runReceiptPollFallback`'s `receiptByHash !== 'available'` gate
+  would fire its "permanently unavailable" warning during the
+  pre-probe window for RPCs that ultimately supported the method.
+  tx-tracker v0.15 now reads `caps.ready === false` and skips silently
+  until the probe completes.
+- The change is purely additive — existing TypeScript consumers that
+  destructure or pass Capabilities continue to compile. No consumer-
+  visible runtime change beyond the new field appearing on returned
+  snapshots.
+
 ## [0.14.0] — 2026-05-14
 
 ### Changed

@@ -6,6 +6,80 @@ this file. Per-package details live in each `packages/*/CHANGELOG.md`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.15.0] — 2026-05-14
+
+Five toolkit improvements, motivated by a localStorage audit on a real
+Provex tx-tracker store dump that surfaced several leak classes,
+ergonomic gaps, and a probe-vs-genuinely-unavailable false positive.
+
+**`@valve-tech/tx-tracker` — `CreateTxTrackerOptions.confirmationsForTerminal`.**
+New opt-in option (default `null`) that promotes a record to terminal
+once its `lastSeenInBlock.confirmations` reaches the threshold, starting
+the retention countdown. Pre-v0.15 the only terminal arms were
+replacement and unseen-for-N-blocks; a successfully-mined tx never
+went terminal and records with 5,000+ confirmations were observed
+still occupying long-lived stores. The terminal anchor is the block
+where the threshold was reached (consistent with the other terminal
+arms). New `confirmed-terminal` event fires alongside the transition
+so consumers can gate UI cleanup off the same signal. Validation:
+threshold must be a positive integer or null/undefined; zero/negative
+throw at construction.
+
+**`@valve-tech/tx-tracker` — persisted-subscription dedup + `subscriptionId`
+opt-in.** Pre-v0.15, every `subscribe(hash, cb, { durable: true })` call
+unconditionally pushed a new entry to `record.persisted`; React component
+remounts and cross-process restarts accumulated structurally-identical
+entries that drove the same fan-out N times. v0.15 auto-dedups on insert
+by `(durable, selector)` and adds an explicit
+`TrackOptions.subscriptionId` for callers that want a stable handle.
+Rehydration also dedups historical duplicates and immediately re-puts
+the cleaned record — self-healing migration, no manual cleanup needed.
+
+**`@valve-tech/tx-tracker` — first-party `createLocalStorageTrackerStore`.**
+New TxTrackerStore implementation backed by `localStorage` (or any
+Storage-shaped object), so consumers can drop their custom localStorage
+stores. Critically, `delete()` clears BOTH the record key AND the
+eventlog key — the canonical bug class consumer-side implementations
+routinely got wrong, leaving orphaned eventlogs that never expired.
+Bigint fields round-trip losslessly via a sentinel-tagged JSON
+replacer. `cleanupLegacyPrefixes` option deletes prior-prefix keys on
+construction for prefix-bump migrations. Also exports
+`deleteKeysStartingWith(storage, prefix)` for standalone cleanup
+without instantiating the full store.
+
+**`@valve-tech/chain-source` — `Capabilities.ready: boolean`.** New
+optional field on the Capabilities interface (additive, non-breaking).
+`false` while the initial probe is in flight, `true` after resolution.
+Distinguishes "probe not yet completed" from "upstream RPC genuinely
+doesn't support this method" — collapsing those into a single
+conservative-default value previously caused cold-start
+`receipt-poll-fallback` warnings against RPCs that ultimately supported
+the method.
+
+**`@valve-tech/tx-tracker` — receipt-poll-fallback gate on caps.ready.**
+`runReceiptPollFallback` now skips silently when `caps.ready === false`
+rather than firing the "permanently unavailable" warning prematurely.
+Once the probe completes, normal gating applies — the warning fires
+once per tracker instance only when the upstream actually lacks the
+capability.
+
+Additional: `TxTrackerStore.delete` docstring tightened to make
+explicit that implementations must clear ALL state for the hash
+(record + eventlog + any other per-hash keys). Pins the contract
+the v0.15 first-party store enforces.
+
+- **tx-tracker**: `confirmationsForTerminal` + `confirmed-terminal`
+  event, subscription dedup + `subscriptionId`,
+  `createLocalStorageTrackerStore` + `deleteKeysStartingWith`,
+  `caps.ready === false` silent gate, `TxTrackerStore.delete`
+  docstring tightening.
+- **chain-source**: `Capabilities.ready: boolean` (optional, additive).
+- **gas-oracle**, **trueblocks-sdk**, **tx-flight-react**,
+  **viem-errors**, **wallet-adapter**: synced no-op republish.
+
+Coverage stays at 100/100/100/100 across all 7 packages. 1146 tests
+total (was 1106; +40 covering the new feature surfaces).
+
 ## [0.14.0] — 2026-05-14
 
 Minor feature release. One substantive change in `@valve-tech/tx-tracker`

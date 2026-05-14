@@ -6,6 +6,93 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.15.0] — 2026-05-14
+
+### Added
+
+- **`CreateTxTrackerOptions.confirmationsForTerminal: number | null`**
+  (default `null`). When set to a positive integer, a record
+  transitions to terminal (`terminalAtBlockNumber` set to the current
+  block) the first block its `lastSeenInBlock.confirmations` reaches
+  the threshold. Closes the long-standing gap where a normally-mined
+  tx never went terminal — retention enforcement only fired on
+  replacement and unseen-for-N-blocks paths, so successful txs
+  accumulated in long-lived stores forever. Records with 5,000+
+  confirmations were observed in production localStorage dumps; the
+  new option lets consumers opt in to retire them via the normal
+  retention pipeline. Recommended value: `≥ reorgDepthBlocks` (default
+  12) so a same-height reorg can't briefly unmine a "terminal" tx.
+  Validation: must be a positive integer or null/undefined; zero,
+  negative, and non-integer values throw at construction.
+- **`TxEventConfirmedTerminal` event kind** — `{ kind: 'confirmed-terminal',
+  confirmations }` fires once when the threshold is reached. Consumer-
+  facing signal that the record is now safe to forget. Carries the
+  triggering confirmations count for downstream gating.
+- **`TrackOptions.subscriptionId?: string`** — caller-provided stable
+  identifier for the persisted subscription (only meaningful when
+  `durable: true`). Repeated calls with the same id are idempotent.
+  Without an explicit id, the tracker auto-dedups by `(durable,
+  selector)`: a second subscribe on the same hash with `durable: true`
+  reuses the prior persisted entry rather than appending. Closes the
+  bug where React component remounts and page reloads accumulated
+  structurally-identical persisted entries across reloads, each
+  driving the same downstream fan-out N times.
+- **`createLocalStorageTrackerStore({ keyPrefix, storage?, eventLogCapacity?,
+  cleanupLegacyPrefixes? })`** — first-party TxTrackerStore implementation
+  backed by `localStorage` (or any `Storage`-shaped object). Records
+  stored under `{keyPrefix}:{chainId}:{hash}`; eventlogs under
+  `{keyPrefix}:eventlog:{chainId}:{hash}`. Bigint fields round-trip
+  losslessly via a sentinel-tagged JSON replacer/reviver.
+  **`delete()` clears BOTH the record AND the eventlog** — the
+  canonical bug class consumer-side localStorage stores routinely got
+  wrong, leaving orphaned eventlogs that never expired.
+  `cleanupLegacyPrefixes` deletes prior-prefix keys on construction for
+  prefix-bump migrations. Defensive against `setItem` failures (quota
+  exceeded, browser disabled storage) — surfaces as a rejected promise
+  so the tracker's `onError` can route it cleanly.
+- **`deleteKeysStartingWith(storage, prefix)`** — standalone helper for
+  prefix cleanup without instantiating the full store.
+- **Self-healing rehydration dedup.** On `tracker.start()`,
+  `dedupPersistedSubscriptions` runs on the rehydrated record's
+  subscription list; when the count shrinks (legacy duplicates
+  collapsed), the cleaned record is immediately written back via
+  `store.put`. Defensive against legacy flat-shape entries (pre-current
+  `selector` nesting) — those pass through untouched rather than
+  crashing the dedup helper.
+
+### Changed
+
+- **`runReceiptPollFallback` skips silently when `caps.ready === false`**.
+  Pre-v0.15, the conservative pre-probe `receiptByHash: 'unavailable'`
+  default tripped the "permanently unavailable" warning gate, firing
+  once per tracker instance even when the RPC ultimately supported the
+  method. The warning now waits for probe completion (`caps.ready === true`)
+  before deciding; pre-probe ticks no-op.
+- **`TxTrackerStore.delete` docstring tightened** to make explicit that
+  implementations must clear ALL state associated with the hash — the
+  record, the eventlog, any other per-hash keys. The first-party
+  `createInMemoryStore` and `createLocalStorageTrackerStore` already
+  enforce this; consumer implementations must do the same to avoid the
+  orphan-eventlog leak class.
+
+### Notes
+
+- The `confirmationsForTerminal` transition fires from both Path 1
+  (fresh inclusion at confirmations=1, relevant only when threshold=1)
+  and Path 2 (confirmation bump from prior block) in
+  `decideBlockObservation`. Terminal is anchored on the current block
+  (matching the existing terminal arms which all anchor on
+  detection-block, not origin-block) — retention math is consistent
+  across all four arms.
+- The status-poll path's mined emit (added in v0.14) hardcodes
+  `confirmations: 1` and doesn't participate in the new transition.
+  This is correct: status-poll mined observations are one-shot per
+  inclusion-block; confirmation accrual happens via block-poll's
+  Path 2, which is where the threshold is checked.
+- 40 new tests across `tracker.test.ts`, `local-storage-store.test.ts`,
+  and `events.test.ts`. 334 total tx-tracker tests (was 294). Coverage
+  remains 100/100/100/100.
+
 ## [0.14.0] — 2026-05-14
 
 ### Added

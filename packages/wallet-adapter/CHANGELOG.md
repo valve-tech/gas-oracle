@@ -6,6 +6,18 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.15.0] — 2026-05-14
+
+### Notes
+
+- Synchronized release — no changes to this package. Republished at
+  0.15.0 alongside the rest of the toolkit; the substantive changes
+  are in `@valve-tech/tx-tracker` (mined-confirmed terminal transition,
+  persisted-subscription dedup, first-party localStorage store,
+  receipt-poll-fallback silent gate during capability probe) and
+  `@valve-tech/chain-source` (new `Capabilities.ready: boolean` field).
+  See the respective CHANGELOGs for details.
+
 ## [0.14.0] — 2026-05-14
 
 ### Notes
