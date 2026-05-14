@@ -6,6 +6,31 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] — 2026-05-14
+
+### Changed
+
+- `EventSource` doc comment for the `'receipt-poll'` discriminator
+  widened again. Previously covered per-hash *mined* checks
+  (v0.13.0 widening). Now explicitly covers per-hash *status*
+  checks — mined OR pending. `@valve-tech/tx-tracker` v0.14.0 uses
+  this discriminator for the new default-on
+  `statusPollEveryBlocks` per-hash status poll (backed by
+  `eth_getTransactionByHash`), which emits both `seen-in-block`
+  (mined-state observation) and `seen-in-mempool` (pending-state
+  observation) under `source: 'receipt-poll'`. The type value
+  itself is unchanged. No consumer migration required.
+
+### Notes
+
+- The widening reflects the conceptual category that
+  `'receipt-poll'` has always represented: "per-hash status check,
+  not from the canonical block or full mempool stream." Receipt
+  polling and `eth_getTransactionByHash` are both
+  per-hash-against-the-node's-tx-index; the same authority
+  constraint (`buildVanishedFromBlock` rejects this source per
+  spec §12.3) applies to both.
+
 ## [0.13.0] — 2026-05-12
 
 ### Changed

@@ -1,6 +1,6 @@
 {
   "name": "@valve-tech/trueblocks-sdk",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Typed TypeScript HTTP client to a running TrueBlocks chifra daemon. Wraps chifra's REST surface (the same one served by `chifra daemon`) with TS types generated from the upstream OpenAPI spec; no Go runtime, no shelling-out.",
   "license": "MIT",
   "homepage": "https://github.com/valve-tech/evm-toolkit/tree/main/packages/trueblocks-sdk#readme",

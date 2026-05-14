@@ -6,6 +6,86 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] — 2026-05-14
+
+### Added
+
+- **`CreateTxTrackerOptions.statusPollEveryBlocks`** — default `1`
+  (every block tick). Controls cadence for a new default-on per-hash
+  status poll via `source.getTransaction(hash)`
+  (`eth_getTransactionByHash`). Set `0` to disable. `2`/`3`/etc. for
+  less-frequent cadences on consumers tracking many hashes.
+  Returns are treated as authoritative for the tx's current state:
+  pending (no `blockHash`) emits `seen-in-mempool`; mined (with
+  `blockHash`) emits `seen-in-block`. Both flow through the existing
+  event pipeline with `source: 'receipt-poll'` (see chain-source
+  v0.14.0 EventSource doc widening). The path is NOT permitted to
+  drive reorg / vanished-from-block events (spec §12.3) — divergence
+  detection stays anchored on the source's block stream.
+- **`TrackOptions.probeTransaction`** — per-subscription consumer
+  fallback called only when `source.getTransaction` returns null.
+  Use to consult a different RPC, multi-RPC fan-out, an indexer with
+  mempool support, or a commercial mempool service. First-set wins
+  across subscribes (mirrors `lostSignalPolicy` / `probeMined`).
+- `ProbeTransaction` type exported from the package root. Function
+  shape `(hash: Hash) => Promise<RawTx | null>`. RawTx is the existing
+  chain-source primitive — consumers don't need to construct a
+  custom shape; whatever they get back from
+  `eth_getTransactionByHash` drops in directly.
+
+### Notes
+
+- Motivation: `txpool_content` is gated on many public RPC gateways
+  (PulseChain et al), and even when available it only reflects the
+  polled node's local mempool — partial-visibility failures look
+  identical to "the tx was dropped" from the tracker's perspective.
+  `eth_getTransactionByHash` is universally exposed and queries the
+  node's indexed-tx store, so it sees txs the node has seen
+  referenced even if they're not currently in the local pool. Per-hash
+  polling is also dramatically lighter than full `txpool_content`
+  snapshots — one tx record vs the entire pending pool. Both
+  properties make per-hash status the right primitive for "is this
+  tx alive?" on consumer-grade RPCs.
+- **Load-bearing side effect: identity priming.** The status-poll
+  caches `(from, nonce)` on the first pending observation. This
+  unblocks replacement detection for txs that were never visible in
+  any local mempool snapshot — `replaced-by` previously couldn't
+  fire because the original's identity was never cached. Critical
+  for chains where partial mempool visibility is the norm.
+- The status-poll path is idempotent within a streak: one
+  `seen-in-mempool` emit per pending streak (tracked via internal
+  `statusPollLastEmittedKind` flag). On a pending→mined transition
+  the dedup flag resets, so a later pending streak (rare — e.g.
+  post-replacement) would re-emit cleanly.
+- Cross-path duplicate handling: if `txpool_content` snapshots ARE
+  available AND status-poll is also running, both paths can emit
+  `seen-in-mempool` for the same observation. Both are truthful;
+  consumers wanting unique delivery dedupe on `(kind, hash)` at the
+  edge.
+- Errors on `source.getTransaction` route through `onError` but the
+  dispatch falls through to `probeTransaction` if one is attached —
+  a transiently-failing source doesn't block the consumer's fallback.
+  Probe errors route through `onError` and short-circuit.
+- Cost characterization: with default `statusPollEveryBlocks: 1` and
+  a consumer tracking N hashes, the additional RPC load is N calls
+  per block tick. Consumers tracking >100 hashes may want
+  `statusPollEveryBlocks: 2` or higher; consumers on rate-limited
+  RPCs may want `0` (opt out entirely).
+- Closures aren't serialized — durable records rehydrated from the
+  store start with `probeTransaction: null` until a fresh subscribe
+  re-binds one. Same precedent as `probeMined` and predicate
+  selectors (spec §13.2).
+- 18 new `tracker.test.ts` cases pin the path's contract: happy
+  emit (mined + pending), null no-op, source-throw falls through to
+  probe, probe-throw routes via onError, probe-throw-no-onError
+  swallowed, pending idempotency, pending→mined transition resets
+  dedup, height-ordering block-poll-wins, identity-check rejects
+  orphaned mid-await emits, bad blockNumber routes via onError,
+  probeTransaction first-set-wins, `statusPollEveryBlocks: 0`
+  disables, `statusPollEveryBlocks: 3` skips ticks, defensive
+  identity caching when tx lacks from/nonce, identity priming
+  unblocks `replaced-by` for previously-invisible originals.
+
 ## [0.13.0] — 2026-05-12
 
 ### Added

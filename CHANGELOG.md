@@ -6,6 +6,58 @@ this file. Per-package details live in each `packages/*/CHANGELOG.md`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] — 2026-05-14
+
+Minor feature release. One substantive change in `@valve-tech/tx-tracker`
+that closes a partial-mempool-visibility class of bug observable on
+PulseChain-style chains where `txpool_content` is gated or where mempool
+gossip is unreliable across the validator set.
+
+**`@valve-tech/tx-tracker`** — new default-on per-hash status poll via
+`source.getTransaction(hash)` (`eth_getTransactionByHash`). The tracker
+now polls one RPC per tracked record per block tick (cadence-configurable
+via `CreateTxTrackerOptions.statusPollEveryBlocks`, default `1`, set `0`
+to opt out). The return is treated as authoritative for the tx's current
+state — pending observations emit `seen-in-mempool`, mined observations
+emit `seen-in-block`, both with `source: 'receipt-poll'`. The path is
+NOT permitted to drive reorg / vanished-from-block events; divergence
+detection stays anchored on the source's block stream.
+
+`eth_getTransactionByHash` is universally exposed (unlike `txpool_content`,
+which is routinely gated) and queries the node's indexed-tx store, so it
+sees txs the node has seen referenced even if they're not currently in
+the local pool. Per-hash polling is also dramatically lighter than full
+`txpool_content` snapshots — one tx record vs the entire pending pool.
+
+The load-bearing side effect is that status-poll caches `(from, nonce)`
+identity on the first pending observation. This unblocks replacement
+detection for txs that were never visible in any local mempool snapshot
+— previously, `replaced-by` couldn't fire because the original's identity
+was never cached, leaving any replacement looking like an unrelated tx.
+
+Per-subscription `TrackOptions.probeTransaction` accepts a consumer
+fallback called only when `source.getTransaction` returns null — for
+cases where the consumer has broader visibility (a different RPC,
+multi-RPC fan-out, an indexer with mempool support, a commercial mempool
+service). First-set wins across subscribes.
+
+**`@valve-tech/chain-source`** — `EventSource` `'receipt-poll'` doc
+widened once more: now explicitly covers per-hash status checks, mined
+OR pending. tx-tracker uses this discriminator for: (1) the
+`receipt-poll-fallback` lost-signal policy, (2) consumer-supplied
+`probeMined` inclusion probes, (3) the new default `statusPollEveryBlocks`
+per-hash status poll (and its optional `probeTransaction` fallback).
+The type value is unchanged.
+
+- **tx-tracker**: new `statusPollEveryBlocks` + `TrackOptions.probeTransaction`
+  API + `ProbeTransaction` exported type.
+- **chain-source**: `EventSource` doc widening (no type-shape change).
+- **gas-oracle**, **trueblocks-sdk**, **tx-flight-react**,
+  **viem-errors**, **wallet-adapter**: synced no-op republish.
+
+Coverage stays at 100/100/100/100 across all 7 packages. 1106 tests
+total (was 1088; +18 status-poll tests in tx-tracker).
+
 ## [0.13.0] — 2026-05-12
 
 Minor feature release. One additive change to `@valve-tech/tx-tracker` —
