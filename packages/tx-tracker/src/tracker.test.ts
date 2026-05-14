@@ -70,6 +70,13 @@ interface MakeSourceOptions {
    * Takes precedence over `receiptMap`.
    */
   getReceiptImpl?: (hash: string) => Promise<TransactionReceipt | null>
+  /**
+   * Override `getTransaction` with a custom implementation. When
+   * absent the stub's `getTransaction` returns null — backwards-
+   * compatible default for tests that don't exercise the
+   * status-poll path.
+   */
+  getTransactionImpl?: (hash: string) => Promise<RawTx | null>
 }
 
 const makeSource = (
@@ -94,6 +101,10 @@ const makeSource = (
     ?? ((hash: string): Promise<TransactionReceipt | null> =>
         Promise.resolve(opts.receiptMap?.[hash] ?? null))
 
+  const getTransactionFn =
+    opts.getTransactionImpl
+    ?? ((_hash: string): Promise<RawTx | null> => Promise.resolve(null))
+
   return {
     start: () => {},
     stop: () => {},
@@ -111,7 +122,7 @@ const makeSource = (
     getFeeHistory: async (): Promise<FeeHistoryResult | null> => null,
     getMempoolSnapshot: async (): Promise<NormalizedMempool | null> => null,
     getReceipt: getReceiptFn,
-    getTransaction: async (): Promise<RawTx | null> => null,
+    getTransaction: getTransactionFn,
     capabilities: () => caps,
     emitBlock: (block) => {
       for (const cb of [...blockSubs]) cb(block)
@@ -3437,5 +3448,521 @@ test('probeMined — reorg invalidates probe-reported inclusion (vanished-from-b
   const vanished = events.find((e) => e.kind === 'vanished-from-block')
   expect(vanished).toBeDefined()
   expect(tracker.getTxStatus('0xt')?.lastSeenInBlock).toBeNull()
+  tracker.stop()
+})
+
+// ---------- statusPollEveryBlocks / probeTransaction tests ----------
+//
+// Default-on per-hash status check via source.getTransaction. The path
+// is universal (not capability-gated), runs every block by default,
+// supports a tick counter for less-frequent cadences, and lets the
+// consumer supply a fallback probe (probeTransaction) used only when
+// the source returns null.
+
+test('statusPoll — emits seen-in-block when source.getTransaction returns a mined tx', async () => {
+  const source = makeSource({
+    getTransactionImpl: async (hash) =>
+      hash === '0xt'
+        ? {
+            hash: '0xt',
+            from: '0xsender',
+            nonce: '0x5',
+            blockHash: '0xfromstatus',
+            blockNumber: '0x42',
+          } as RawTx
+        : null,
+  })
+  const tracker = startTracker(source)
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), { emitInitial: false })
+
+  source.emitBlock(makeBlock(0x10n, '0xtip10', []))
+  await flush()
+
+  const seen = events.find(
+    (e): e is import('./events.js').TxEventSeenInBlock =>
+      e.kind === 'seen-in-block',
+  )
+  expect(seen).toBeDefined()
+  expect(seen!.source).toBe('receipt-poll')
+  expect(seen!.blockHash).toBe('0xfromstatus')
+  expect(seen!.blockNumber).toBe(0x42n)
+  expect(tracker.getTxStatus('0xt')?.lastSeenInBlock?.source).toBe('receipt-poll')
+  tracker.stop()
+})
+
+test('statusPoll — emits seen-in-mempool when source.getTransaction returns pending tx', async () => {
+  const source = makeSource({
+    getTransactionImpl: async (hash) =>
+      hash === '0xt'
+        ? { hash: '0xt', from: '0xa', nonce: '0x3' } as RawTx
+        : null,
+  })
+  const tracker = startTracker(source)
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), { emitInitial: false })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+
+  const seen = events.find(
+    (e): e is import('./events.js').TxEventSeenInMempool =>
+      e.kind === 'seen-in-mempool',
+  )
+  expect(seen).toBeDefined()
+  expect(seen!.source).toBe('receipt-poll')
+  expect(seen!.bucket).toBe('pending')
+  expect(seen!.tx.from).toBe('0xa')
+
+  // Identity is primed — replacement detection will work even though
+  // txpool_content never saw the tx.
+  const status = tracker.getTxStatus('0xt')
+  expect(status?.lastSeenInMempool?.bucket).toBe('pending')
+  expect(status?.lastSeenInMempool?.source).toBe('receipt-poll')
+  tracker.stop()
+})
+
+test('statusPoll — null return is a no-op', async () => {
+  const source = makeSource() // default getTransaction returns null
+  const tracker = startTracker(source)
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xnothing', (e) => events.push(e), { emitInitial: false })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+
+  expect(
+    events.filter(
+      (e) =>
+        (e.kind === 'seen-in-block' || e.kind === 'seen-in-mempool') &&
+        e.source === 'receipt-poll',
+    ),
+  ).toHaveLength(0)
+  tracker.stop()
+})
+
+test('statusPoll — source.getTransaction throw is reported but probe still tries', async () => {
+  const onError = vi.fn()
+  const probe = vi.fn(async () => ({
+    hash: '0xt',
+    from: '0xa',
+    nonce: '0x1',
+  } as RawTx))
+  const source = makeSource({
+    getTransactionImpl: async () => {
+      throw new Error('source rpc down')
+    },
+  })
+  const tracker = startTracker(source, { onError })
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), {
+    emitInitial: false,
+    probeTransaction: probe,
+  })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+
+  expect(onError).toHaveBeenCalledWith(
+    'tx-tracker.getTransaction',
+    expect.objectContaining({ message: 'source rpc down' }),
+  )
+  expect(probe).toHaveBeenCalledWith('0xt')
+  // Probe answered → seen-in-mempool emitted via fallback.
+  expect(
+    events.find(
+      (e) => e.kind === 'seen-in-mempool' && e.source === 'receipt-poll',
+    ),
+  ).toBeDefined()
+  tracker.stop()
+})
+
+test('statusPoll — probeTransaction called only when source.getTransaction returns null', async () => {
+  const probe = vi.fn(async () => null)
+  const source = makeSource({
+    // Source has the tx — probe should NOT be called.
+    getTransactionImpl: async (hash) =>
+      ({ hash, from: '0xa', nonce: '0x0' } as RawTx),
+  })
+  const tracker = startTracker(source)
+
+  tracker.subscribe('0xt', () => {}, {
+    emitInitial: false,
+    probeTransaction: probe,
+  })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+
+  expect(probe).not.toHaveBeenCalled()
+  tracker.stop()
+})
+
+test('statusPoll — probeTransaction throwing routes through onError', async () => {
+  const onError = vi.fn()
+  const probe = vi.fn(async () => {
+    throw new Error('probe down')
+  })
+  const source = makeSource() // getTransaction returns null
+  const tracker = startTracker(source, { onError })
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xerr', (e) => events.push(e), {
+    emitInitial: false,
+    probeTransaction: probe,
+  })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+
+  expect(onError).toHaveBeenCalledWith(
+    'tx-tracker.probeTransaction',
+    expect.objectContaining({ message: 'probe down' }),
+  )
+  expect(
+    events.filter(
+      (e) =>
+        (e.kind === 'seen-in-block' || e.kind === 'seen-in-mempool') &&
+        e.source === 'receipt-poll',
+    ),
+  ).toHaveLength(0)
+  tracker.stop()
+})
+
+test('statusPoll — probeTransaction throwing with no onError is swallowed', async () => {
+  const probe = vi.fn(async () => {
+    throw new Error('silent')
+  })
+  const source = makeSource()
+  const tracker = startTracker(source) // no onError configured
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xs', (e) => events.push(e), {
+    emitInitial: false,
+    probeTransaction: probe,
+  })
+
+  // Should not throw or unhandled-reject.
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+
+  expect(
+    events.filter(
+      (e) =>
+        (e.kind === 'seen-in-block' || e.kind === 'seen-in-mempool') &&
+        e.source === 'receipt-poll',
+    ),
+  ).toHaveLength(0)
+  tracker.stop()
+})
+
+test('statusPoll — pending dedup: only one seen-in-mempool per pending streak', async () => {
+  const source = makeSource({
+    getTransactionImpl: async (hash) =>
+      ({ hash, from: '0xa', nonce: '0x7' } as RawTx),
+  })
+  const tracker = startTracker(source)
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), { emitInitial: false })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+  source.emitBlock(makeBlock(0x2n, '0xb2', [], '0xb1'))
+  await flush()
+  source.emitBlock(makeBlock(0x3n, '0xb3', [], '0xb2'))
+  await flush()
+
+  const mempoolEvents = events.filter(
+    (e) => e.kind === 'seen-in-mempool' && e.source === 'receipt-poll',
+  )
+  expect(mempoolEvents).toHaveLength(1)
+  tracker.stop()
+})
+
+test('statusPoll — pending → mined transition resets dedup and emits seen-in-block', async () => {
+  let mined = false
+  const source = makeSource({
+    getTransactionImpl: async (hash) => {
+      if (mined) {
+        return {
+          hash,
+          from: '0xa',
+          nonce: '0x9',
+          blockHash: '0xinclusion',
+          blockNumber: '0xa',
+        } as RawTx
+      }
+      return { hash, from: '0xa', nonce: '0x9' } as RawTx
+    },
+  })
+  const tracker = startTracker(source)
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), { emitInitial: false })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+  expect(
+    events.filter((e) => e.kind === 'seen-in-mempool' && e.source === 'receipt-poll'),
+  ).toHaveLength(1)
+
+  mined = true
+  source.emitBlock(makeBlock(0x2n, '0xb2', [], '0xb1'))
+  await flush()
+
+  const seenBlock = events.find(
+    (e) => e.kind === 'seen-in-block' && e.source === 'receipt-poll',
+  )
+  expect(seenBlock).toBeDefined()
+  tracker.stop()
+})
+
+test('statusPoll — height-ordering: block-poll wins when status-poll reports same-or-older inclusion', async () => {
+  const source = makeSource({
+    getTransactionImpl: async (hash) =>
+      ({
+        hash,
+        from: '0xa',
+        nonce: '0x0',
+        blockHash: '0xstatusstale',
+        blockNumber: '0x10',
+      } as RawTx),
+  })
+  const tracker = startTracker(source)
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), { emitInitial: false })
+
+  // block-poll sees the tx at the same height first; status-poll's
+  // observation at the same block must be discarded.
+  source.emitBlock(
+    makeBlock(0x10n, '0xb10', [{ hash: '0xt', from: '0xa', nonce: '0x0' }]),
+  )
+  await flush()
+
+  const seenEvents = events.filter((e) => e.kind === 'seen-in-block')
+  expect(seenEvents).toHaveLength(1)
+  expect(seenEvents[0].source).not.toBe('receipt-poll')
+  tracker.stop()
+})
+
+test('statusPoll — identity check rejects orphaned mid-await emit (audit #6 parity)', async () => {
+  let resolveTx: ((r: RawTx | null) => void) | null = null
+  const source = makeSource({
+    getTransactionImpl: () =>
+      new Promise<RawTx | null>((resolve) => {
+        resolveTx = resolve
+      }),
+  })
+  const tracker = startTracker(source)
+
+  const allEvents: import('./events.js').TxEvent[] = []
+  tracker.subscribeAll((e) => allEvents.push(e))
+
+  const unsubA = tracker.subscribe('0xt', () => {}, { emitInitial: false })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+  expect(resolveTx).not.toBeNull()
+
+  unsubA()
+  const aPrimeEvents: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => aPrimeEvents.push(e), { emitInitial: false })
+
+  resolveTx!({
+    hash: '0xt',
+    from: '0xa',
+    nonce: '0x0',
+  } as RawTx)
+  await flush()
+  await flush()
+
+  expect(aPrimeEvents.find((e) => e.kind === 'seen-in-mempool')).toBeUndefined()
+  const phantom = allEvents.find(
+    (e) => e.kind === 'seen-in-mempool' && e.source === 'receipt-poll',
+  )
+  expect(phantom).toBeUndefined()
+  tracker.stop()
+})
+
+test('statusPoll — bad blockNumber from getTransaction routes through onError', async () => {
+  const onError = vi.fn()
+  const source = makeSource({
+    getTransactionImpl: async (hash) =>
+      ({
+        hash,
+        from: '0xa',
+        nonce: '0x0',
+        blockHash: '0xfoo',
+        blockNumber: 'not-hex',
+      } as RawTx),
+  })
+  const tracker = startTracker(source, { onError })
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), { emitInitial: false })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+
+  expect(onError).toHaveBeenCalledWith(
+    'tx-tracker.statusPoll',
+    expect.objectContaining({ message: expect.stringContaining('bad blockNumber') }),
+  )
+  expect(events.filter((e) => e.kind === 'seen-in-block')).toHaveLength(0)
+  tracker.stop()
+})
+
+test('statusPoll — probeTransaction first-set-wins across subscribes', async () => {
+  const first = vi.fn(async () => null)
+  const second = vi.fn(async () => null)
+  const source = makeSource()
+  const tracker = startTracker(source)
+
+  tracker.subscribe('0xt', () => {}, {
+    emitInitial: false,
+    probeTransaction: first,
+  })
+  tracker.subscribe('0xt', () => {}, {
+    emitInitial: false,
+    probeTransaction: second,
+  })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+
+  expect(first).toHaveBeenCalled()
+  expect(second).not.toHaveBeenCalled()
+  tracker.stop()
+})
+
+test('statusPoll — statusPollEveryBlocks=0 disables the path entirely', async () => {
+  const getTransactionImpl = vi.fn(async () => null)
+  const source = makeSource({ getTransactionImpl })
+  const tracker = startTracker(source, { statusPollEveryBlocks: 0 })
+
+  tracker.subscribe('0xt', () => {}, { emitInitial: false })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+  source.emitBlock(makeBlock(0x2n, '0xb2', [], '0xb1'))
+  await flush()
+
+  expect(getTransactionImpl).not.toHaveBeenCalled()
+  tracker.stop()
+})
+
+test('statusPoll — statusPollEveryBlocks=3 skips ticks until threshold reached', async () => {
+  const getTransactionImpl = vi.fn(async () => null)
+  const source = makeSource({ getTransactionImpl })
+  const tracker = startTracker(source, { statusPollEveryBlocks: 3 })
+
+  tracker.subscribe('0xt', () => {}, { emitInitial: false })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+  expect(getTransactionImpl).not.toHaveBeenCalled()
+
+  source.emitBlock(makeBlock(0x2n, '0xb2', [], '0xb1'))
+  await flush()
+  expect(getTransactionImpl).not.toHaveBeenCalled()
+
+  source.emitBlock(makeBlock(0x3n, '0xb3', [], '0xb2'))
+  await flush()
+  expect(getTransactionImpl).toHaveBeenCalledTimes(1)
+  tracker.stop()
+})
+
+test('statusPoll — pending tx without from/nonce does not crash identity caching', async () => {
+  // Defensive: some RPCs return RawTx shapes missing optional fields.
+  // Identity should stay null but the event should still emit.
+  const source = makeSource({
+    getTransactionImpl: async (hash) => ({ hash } as RawTx),
+  })
+  const tracker = startTracker(source)
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), { emitInitial: false })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+
+  expect(
+    events.find((e) => e.kind === 'seen-in-mempool' && e.source === 'receipt-poll'),
+  ).toBeDefined()
+  tracker.stop()
+})
+
+test('statusPoll — mined tx without from/nonce does not crash identity caching', async () => {
+  const source = makeSource({
+    getTransactionImpl: async (hash) =>
+      ({
+        hash,
+        blockHash: '0xb',
+        blockNumber: '0x5',
+      } as RawTx),
+  })
+  const tracker = startTracker(source)
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xt', (e) => events.push(e), { emitInitial: false })
+
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+
+  expect(
+    events.find((e) => e.kind === 'seen-in-block' && e.source === 'receipt-poll'),
+  ).toBeDefined()
+  tracker.stop()
+})
+
+test('statusPoll — identity primed from pending observation unblocks replacement detection', async () => {
+  // The load-bearing motivation. Original tx is never seen in any
+  // txpool_content snapshot (mempool path returns it absent), but
+  // status-poll observes it and caches (from, nonce). A later mempool
+  // snapshot containing a same-(from, nonce)-different-hash replacement
+  // can then fire `replaced-by` — which would have been impossible
+  // without status-poll's identity priming.
+  let phase: 'before' | 'after' = 'before'
+  const source = makeSource({
+    getTransactionImpl: async (hash) =>
+      phase === 'before' && hash === '0xorig'
+        ? ({ hash: '0xorig', from: '0xa', nonce: '0x7' } as RawTx)
+        : null,
+  })
+  const tracker = startTracker(source)
+
+  const events: import('./events.js').TxEvent[] = []
+  tracker.subscribe('0xorig', (e) => events.push(e), { emitInitial: false })
+
+  // Block 1: status-poll caches identity for 0xorig.
+  source.emitBlock(makeBlock(0x1n, '0xb1', []))
+  await flush()
+  expect(tracker.getTxStatus('0xorig')?.lastSeenInMempool?.tx.from).toBe('0xa')
+
+  // Now emit a mempool snapshot containing a replacement tx 0xrepl
+  // sharing (from=0xa, nonce=7) with 0xorig. The cached identity lets
+  // the tracker recognize this as a replacement.
+  phase = 'after'
+  source.emitMempool({
+    pending: {
+      '0xa': {
+        '7': { hash: '0xrepl', from: '0xa', nonce: '0x7' },
+      },
+    },
+    queued: {},
+  })
+  await flush()
+
+  const replaced = events.find((e) => e.kind === 'replaced-by')
+  expect(replaced).toBeDefined()
+  if (replaced && replaced.kind === 'replaced-by') {
+    expect(replaced.replacementHash).toBe('0xrepl')
+  }
   tracker.stop()
 })

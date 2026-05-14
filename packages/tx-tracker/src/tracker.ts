@@ -52,6 +52,7 @@ import type { TxGroupEvent } from './group-events.js'
 
 import {
   buildSeenInBlock,
+  buildSeenInMempool,
   buildSignalDegraded,
   buildSignalRecovered,
   buildStarted,
@@ -122,6 +123,33 @@ export type ProbeMinedResult = {
 }
 
 /**
+ * Consumer-supplied fallback for per-hash status (`eth_getTransactionByHash`).
+ * Attached per-subscription via {@link TrackOptions.probeTransaction}. The
+ * tracker calls `source.getTransaction(hash)` first on each status-poll tick;
+ * if that returns null AND this probe is attached, the tracker calls the probe
+ * as a fallback. Use to consult a different RPC, multi-RPC fan-out, an indexer
+ * with mempool support, or a commercial mempool service.
+ *
+ * Return value semantics mirror `eth_getTransactionByHash`:
+ *
+ *   - `null` → tx unknown to your fallback source.
+ *   - `{ blockHash: null/undefined, from, nonce, ... }` → pending. Tracker
+ *     caches identity (for replacement detection) and emits `seen-in-mempool`
+ *     with `source: 'receipt-poll'` on the first pending-state observation
+ *     it makes via this path.
+ *   - `{ blockHash: '0x…', ... }` → mined. Tracker emits `seen-in-block`
+ *     with `source: 'receipt-poll'`, subject to the height-ordering rule.
+ *
+ * The probe is NOT permitted to drive reorg / vanished-from-block events
+ * (spec §12.3) — divergence detection stays anchored on the source's block
+ * stream where parent-hash chains are authoritative.
+ *
+ * First-set wins across multiple subscribes on the same hash (mirrors
+ * `lostSignalPolicy` / `probeMined`).
+ */
+export type ProbeTransaction = (hash: Hash) => Promise<RawTx | null>
+
+/**
  * Consumer-supplied mined-detection probe. Attached per-subscription via
  * {@link TrackOptions.probeMined}. The tracker dispatches it for the tracked
  * hash on every block tick, in addition to its own block-poll inclusion check.
@@ -188,6 +216,16 @@ export interface TrackOptions {
    * ignored (mirrors the {@link TrackOptions.lostSignalPolicy} contract).
    */
   probeMined?: ProbeMined
+
+  /**
+   * Consumer-supplied fallback for `eth_getTransactionByHash`-style status
+   * checks. See {@link ProbeTransaction}. Called only when the source's
+   * default `getTransaction(hash)` returns null — for cases where the
+   * consumer has broader visibility (different RPC, multi-RPC fan-out,
+   * indexer with mempool support, commercial mempool service). First-set
+   * wins across subscriptions on the same hash.
+   */
+  probeTransaction?: ProbeTransaction
 }
 
 /** Bulk subscription options — extends per-hash `TrackOptions`. */
@@ -257,6 +295,25 @@ export interface CreateTxTrackerOptions {
   retentionBlocks?: number
   onError?: (method: string, err: unknown) => void
   lifecycle?: 'eager' | 'lazy'
+  /**
+   * Cadence for per-hash status polling via
+   * `source.getTransaction(hash)` (`eth_getTransactionByHash`). Runs once
+   * per block tick for every tracked record by default — `1` polls every
+   * block; `2` every other block; `0` disables the path entirely. The
+   * status-poll path is the consumer-friendly default for chains where
+   * `txpool_content` is gated or where mempool gossip is unreliable
+   * (PulseChain et al): `eth_getTransactionByHash` is universally exposed
+   * and queries the node's indexed-tx store, so it sees txs that aren't
+   * currently in the local pool but the node has seen referenced.
+   *
+   * Cost: one `eth_getTransactionByHash` RPC per tracked record per
+   * matching tick. Override per-subscription via
+   * {@link TrackOptions.probeTransaction} when the consumer has a
+   * better-visibility per-hash check than the default RPC method.
+   *
+   * Default `1`. Set `0` to disable (existing behavior pre-v0.14).
+   */
+  statusPollEveryBlocks?: number
 }
 
 /**
@@ -383,6 +440,26 @@ interface TrackedRecord {
   withReceipts: boolean
   /** Per-subscription mined probe; first-set wins. */
   probeMined: ProbeMined | null
+  /**
+   * Per-subscription getTransaction fallback; first-set wins. Used by
+   * runStatusPoll when source.getTransaction returns null.
+   */
+  probeTransaction: ProbeTransaction | null
+  /**
+   * Dedup state for the status-poll path's own emits. `'pending'` =
+   * status-poll has already emitted `seen-in-mempool` for the current
+   * pending streak; `'mined'` = status-poll has already emitted
+   * `seen-in-block` (further mined-state ticks no-op until height
+   * advances per the height-ordering rule); `null` = no prior emit.
+   * Reset to null when the tracker transitions kind (pending→mined).
+   */
+  statusPollLastEmittedKind: 'pending' | 'mined' | null
+  /**
+   * Tick counter for `statusPollEveryBlocks > 1`. Incremented every
+   * block tick the record is alive; the dispatch fires when the
+   * counter reaches the configured cadence and resets to 0.
+   */
+  statusPollTicksSince: number
 }
 
 interface BulkSub {
@@ -500,6 +577,7 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     retentionBlocks = defaultRetentionBlocks,
     onError,
     lifecycle = 'eager',
+    statusPollEveryBlocks = 1,
   } = options
 
   const tracked = new Map<Hash, TrackedRecord>()
@@ -612,6 +690,9 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
       persisted: [],
       withReceipts: false,
       probeMined: null,
+      probeTransaction: null,
+      statusPollLastEmittedKind: null,
+      statusPollTicksSince: 0,
     }
     tracked.set(hash, record)
     return record
@@ -834,6 +915,201 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
   }
 
   // -------------------------------------------------------------
+  // Per-hash status poll (CreateTxTrackerOptions.statusPollEveryBlocks)
+  // -------------------------------------------------------------
+
+  /**
+   * Default-on per-hash status check via `eth_getTransactionByHash`.
+   *
+   * Motivation: `txpool_content` is gated on many public RPC gateways
+   * (PulseChain et al), and even when available it only shows the
+   * polled node's local mempool — partial-visibility failures look
+   * identical to "the tx was dropped" from the tracker's perspective.
+   * `eth_getTransactionByHash` is universally exposed and queries the
+   * node's indexed-tx store, so it sees txs the node has seen referenced
+   * even if they're not currently in the local pool. Per-hash polling
+   * is also dramatically cheaper than full `txpool_content` snapshots —
+   * one tx record vs the entire pending pool.
+   *
+   * Cadence is controlled by `statusPollEveryBlocks` (default 1, every
+   * block; 0 disables). The dispatcher uses the default
+   * `source.getTransaction(hash)`; consumers with broader-visibility
+   * sources (multi-RPC, indexer with mempool support, commercial mempool
+   * service) supply a fallback via `TrackOptions.probeTransaction` that
+   * runs only when the default returns null.
+   *
+   * Emission semantics:
+   *
+   *   - `null` return (from both default and probe) → no-op.
+   *   - `blockHash` is null/undefined → pending. Cache identity for
+   *     replacement detection; emit `seen-in-mempool` with
+   *     `source: 'receipt-poll'` on the first pending observation of
+   *     this streak (idempotent via `statusPollLastEmittedKind`).
+   *   - `blockHash` is set → mined. Emit `seen-in-block` with
+   *     `source: 'receipt-poll'`, subject to the height-ordering rule
+   *     (mirror runReceiptPollFallback / runMinedProbe).
+   *
+   * The path is NOT permitted to drive reorg / vanished-from-block
+   * events (spec §12.3). On a same-hash pending→mined transition the
+   * tracker fires the mined emit and resets the pending dedup flag.
+   *
+   * Note on potential duplicate emits: if `txpool_content` snapshots
+   * ARE available AND the consumer is also polling status, both paths
+   * can fire `seen-in-mempool` for the same observation. Both are
+   * truthful — different observation sources reporting the same fact —
+   * and consumers wanting unique-only delivery should dedupe on
+   * `(kind, hash)` at their edge. This is preferable to entangling the
+   * two paths' state machines.
+   */
+  const runStatusPoll = async (
+    record: TrackedRecord,
+    tipBlockNumber: bigint,
+  ): Promise<void> => {
+    if (statusPollEveryBlocks <= 0) return
+
+    // Tick counter — only fetch every `statusPollEveryBlocks` ticks.
+    const ticksSince = record.statusPollTicksSince + 1
+    if (ticksSince < statusPollEveryBlocks) {
+      record.statusPollTicksSince = ticksSince
+      return
+    }
+    record.statusPollTicksSince = 0
+
+    let tx: RawTx | null = null
+    try {
+      tx = await source.getTransaction(record.hash)
+    } catch (err) {
+      onError?.('tx-tracker.getTransaction', err)
+      // Fall through to probe — the source may be down but the
+      // consumer's fallback might still answer.
+    }
+    if (!tx && record.probeTransaction) {
+      try {
+        tx = await record.probeTransaction(record.hash)
+      } catch (err) {
+        onError?.('tx-tracker.probeTransaction', err)
+        return
+      }
+    }
+    if (!tx) return
+
+    // Identity check (mirror runReceiptPollFallback / runMinedProbe):
+    // bail if the record was unsubscribed and possibly re-subscribed
+    // while the status poll was in-flight.
+    if (tracked.get(record.hash) !== record) return
+
+    // Mined path: blockHash present and non-empty. The viem-style
+    // shape uses `'0x...'` truthy when mined; pending txs have it
+    // absent or null. We treat any non-empty string as mined.
+    const blockHashRaw =
+      'blockHash' in tx && typeof tx.blockHash === 'string' && tx.blockHash !== ''
+        ? tx.blockHash
+        : null
+    const blockNumberRaw =
+      'blockNumber' in tx && typeof tx.blockNumber === 'string'
+        ? tx.blockNumber
+        : null
+
+    if (blockHashRaw !== null && blockNumberRaw !== null) {
+      let blockNumber: bigint
+      try {
+        blockNumber = BigInt(blockNumberRaw)
+      } catch {
+        onError?.(
+          'tx-tracker.statusPoll',
+          new Error(`bad blockNumber from getTransaction: ${blockNumberRaw}`),
+        )
+        return
+      }
+
+      // Height-ordering rule: only update when the returned block is
+      // strictly newer than what we've already recorded.
+      const existingBlock = record.status.lastSeenInBlock
+      if (existingBlock && existingBlock.blockNumber >= blockNumber) {
+        return
+      }
+
+      // Cache identity if not already set (cheap; the source's response
+      // carries from/nonce on a mined tx).
+      const identityPatch =
+        record.identity === null && tx.from && tx.nonce
+          ? { from: tx.from, nonce: tx.nonce }
+          : null
+      if (identityPatch) record.identity = identityPatch
+
+      emit(
+        record,
+        buildSeenInBlock({
+          hash: record.hash,
+          chainId,
+          source: 'receipt-poll',
+          at: { blockNumber: tipBlockNumber, timestamp: latestTipTimestamp },
+          blockHash: blockHashRaw,
+          blockNumber,
+          transactionIndex: 0,
+          confirmations: 1,
+        }),
+      )
+      record.status = {
+        ...record.status,
+        lastSeenInBlock: {
+          blockHash: blockHashRaw,
+          blockNumber,
+          transactionIndex: 0,
+          confirmations: 1,
+          source: 'receipt-poll',
+        },
+        lastObservedAtBlock: tipBlockNumber,
+      }
+      record.statusPollLastEmittedKind = 'mined'
+      return
+    }
+
+    // Pending path: idempotent — emit only on the first pending
+    // observation of the current streak. A subsequent mined transition
+    // resets the dedup flag so the next pending streak (rare, e.g.
+    // post-replacement) re-emits cleanly.
+    if (record.statusPollLastEmittedKind === 'pending') return
+
+    // Cache identity early — this is the load-bearing effect on
+    // chains with partial mempool visibility, because it unblocks
+    // replacement detection even when the txpool_content snapshot
+    // never sees the original.
+    if (record.identity === null && tx.from && tx.nonce) {
+      record.identity = { from: tx.from, nonce: tx.nonce }
+    }
+
+    const envelope: At = {
+      blockNumber: tipBlockNumber,
+      timestamp: latestTipTimestamp,
+    }
+    emit(
+      record,
+      buildSeenInMempool({
+        hash: record.hash,
+        chainId,
+        source: 'receipt-poll',
+        at: envelope,
+        bucket: 'pending',
+        tx,
+      }),
+    )
+    record.status = {
+      ...record.status,
+      lastSeenInMempool: {
+        bucket: 'pending',
+        tx,
+        at: envelope,
+        source: 'receipt-poll',
+      },
+      firstObservedAtBlock:
+        record.status.firstObservedAtBlock ?? tipBlockNumber,
+      lastObservedAtBlock: tipBlockNumber,
+    }
+    record.statusPollLastEmittedKind = 'pending'
+  }
+
+  // -------------------------------------------------------------
   // Block path — runs on every source block emit
   // -------------------------------------------------------------
 
@@ -1033,6 +1309,7 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     for (const record of tracked.values()) {
       void runReceiptPollFallback(record, latestTip.number)
       void runMinedProbe(record, latestTip.number)
+      void runStatusPoll(record, latestTip.number)
     }
   }
 
@@ -1339,6 +1616,9 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     if (opts.probeMined && record.probeMined === null) {
       record.probeMined = opts.probeMined
     }
+    if (opts.probeTransaction && record.probeTransaction === null) {
+      record.probeTransaction = opts.probeTransaction
+    }
     if (opts.withReceipts === true) {
       record.withReceipts = true
     }
@@ -1618,6 +1898,9 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
         // get no probe until a fresh subscribe attaches one. See spec
         // §13.2 (predicate selectors are non-durable for the same reason).
         probeMined: null,
+        probeTransaction: null,
+        statusPollLastEmittedKind: null,
+        statusPollTicksSince: 0,
       }
       tracked.set(persisted.hash, record)
     }
