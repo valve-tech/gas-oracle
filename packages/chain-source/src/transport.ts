@@ -192,3 +192,95 @@ export const fetchTransaction = async (
   onError?: (err: unknown) => void,
 ): Promise<RawTx | null> =>
   safeRequest<RawTx>(client, 'eth_getTransactionByHash', [hash], onError)
+
+/**
+ * Estimate the average block time (ms/block) by sampling `latest` and
+ * `latest - lookback`. Returns null when either fetch fails, the
+ * sampled blocks don't decode, or the computed interval is non-positive
+ * (consumer is responsible for falling back to a static interval).
+ *
+ * Why this exists: the v0.15 source polled on a fixed `pollIntervalMs`,
+ * which is wasteful on chains where the actual block time is known —
+ * a tick that fires during the expected gap between blocks just hits
+ * `eth_blockNumber` to learn nothing has changed. The v0.16 adaptive
+ * scheduler uses this estimate to time the next tick around the
+ * expected next-block moment, with backoff retries when the head
+ * doesn't move on schedule.
+ *
+ * Implementation notes:
+ *
+ * - Both blocks fetched with `fullTransactions: false` (false because
+ *   we only need `number` + `timestamp`; the full tx list would be
+ *   wasted bytes). The shape we deserialize keeps only those two
+ *   fields rather than the full BlockResult.
+ * - 256 is the default lookback. Larger samples smooth out short-term
+ *   variance (mempool turmoil, validator outages) but stretch farther
+ *   back where average block time may have actually changed. For
+ *   chains with sub-block-second cadence (some L2s), the caller may
+ *   want a larger lookback; for chains with very slow blocks
+ *   (Bitcoin-style), smaller.
+ * - The same `onError` sink the consumer wires for other RPC calls
+ *   gets invoked here, tagged with the appropriate method name.
+ */
+export const estimateBlockTimeMs = async (
+  client: PublicClient,
+  lookback: number = 256,
+  onError?: (method: string, err: unknown) => void,
+): Promise<number | null> => {
+  // Validate the caller's lookback up front — a zero or negative value
+  // would divide-by-zero or invert the math below. Better to fail
+  // cheaply here than mint Infinity / negative durations downstream.
+  if (!Number.isInteger(lookback) || lookback <= 0) return null
+  type ThinBlock = { number?: string; timestamp?: string }
+  const sinkLatest = onError
+    ? (err: unknown) => onError('eth_getBlockByNumber:latest', err)
+    : undefined
+  const latest = await safeRequest<ThinBlock>(
+    client,
+    'eth_getBlockByNumber',
+    ['latest', false],
+    sinkLatest,
+  )
+  if (!latest || !latest.number || !latest.timestamp) return null
+
+  let latestNumber: bigint
+  let latestTs: bigint
+  try {
+    latestNumber = BigInt(latest.number)
+    latestTs = BigInt(latest.timestamp)
+  } catch {
+    return null
+  }
+
+  // The target block must exist. If lookback overshoots genesis,
+  // clamp to a positive height; if that's still 0 we can't sample.
+  const targetHeight = latestNumber - BigInt(lookback)
+  if (targetHeight <= 0n) return null
+
+  const sinkOld = onError
+    ? (err: unknown) => onError('eth_getBlockByNumber:lookback', err)
+    : undefined
+  const old = await safeRequest<ThinBlock>(
+    client,
+    'eth_getBlockByNumber',
+    [`0x${targetHeight.toString(16)}`, false],
+    sinkOld,
+  )
+  if (!old || !old.number || !old.timestamp) return null
+
+  let oldTs: bigint
+  try {
+    oldTs = BigInt(old.timestamp)
+  } catch {
+    return null
+  }
+
+  if (latestTs <= oldTs) return null
+
+  // Both block timestamps are in seconds; convert to ms and divide by
+  // the lookback span (always `lookback` blocks since we asked by
+  // height — no gaps possible). Earlier guards ensure deltaSeconds > 0
+  // and lookback > 0, so `ms` is always a finite positive number.
+  const deltaSeconds = Number(latestTs - oldTs)
+  return (deltaSeconds * 1000) / lookback
+}

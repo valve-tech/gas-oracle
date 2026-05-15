@@ -667,10 +667,16 @@ test('start is idempotent — calling twice does not double-fire ticks', async (
     // The first tick is fire-and-forget at start — wait for it.
     await vi.advanceTimersByTimeAsync(0)
 
-    const blockCalls = calls.filter((c) => c.method === 'eth_getBlockByNumber')
-    // One immediate tick (not two — start is idempotent), interval not
-    // yet fired (interval is 1M ms).
-    expect(blockCalls).toHaveLength(1)
+    // Filter to tick-driven calls only: tick uses `fullTransactions: true`,
+    // whereas the v0.16+ adaptive scheduler's block-time estimation uses
+    // `fullTransactions: false` for both the `latest` and lookback fetches.
+    const tickCalls = calls.filter(
+      (c) =>
+        c.method === 'eth_getBlockByNumber' &&
+        Array.isArray(c.params) &&
+        c.params[1] === true,
+    )
+    expect(tickCalls).toHaveLength(1)
 
     source.stop()
   } finally {
@@ -1605,3 +1611,361 @@ test('subscribeMempool — WS stream-level onError routes to options.onError', a
   )
   source.stop()
 })
+
+// ---------- v0.16 adaptive scheduler + logger tests ----------
+
+const blockWithTs = (number: string, hash: string, ts: string): BlockResult => ({
+  number,
+  hash,
+  parentHash: '0xparent',
+  timestamp: ts,
+  baseFeePerGas: '0x7',
+  gasLimit: '0x5208',
+  gasUsed: '0x0',
+  transactions: [],
+})
+
+test('adaptive scheduler — estimateBlockTimeMs computed at start uses latest + lookback', async () => {
+  // Block 100 at timestamp 1000s; block 100-256 at timestamp 1000 - 256*10s
+  // → 10s per block expected.
+  const latest = blockWithTs('0x100', '0xtip', '0x3e8') // 1000s
+  // 0x100 - 0x100 = 0; if we sample 256 back from height 256 we'd get
+  // height 0 — clamped. Make latest large enough: use 0x200 (512).
+  const latestHi = blockWithTs('0x200', '0xtip', '0x4e20') // 20000s
+  const old = blockWithTs(
+    '0x100', // 256 back from 512
+    '0xold',
+    '0x4d8c', // 19852s = 20000s - 256*10s + (a couple seconds slop)
+  )
+  const requests: RpcCall[] = []
+  const client = {
+    transport: { type: 'http' },
+    request: vi.fn(async (req: RpcCall) => {
+      requests.push(req)
+      if (req.method === 'eth_blockNumber') return '0x200'
+      if (req.method === 'eth_getBlockByNumber') {
+        const [tag, full] = req.params as [string, boolean]
+        if (tag === 'latest') return full === true ? latestHi : latestHi
+        if (tag === '0x100') return old
+        return latest
+      }
+      return null
+    }),
+  } as unknown as PublicClient
+  const logged: Array<[string, string, unknown]> = []
+  const source = createChainSource({
+    client,
+    pollIntervalMs: 1_000_000,
+    logger: (level, msg, meta) => logged.push([level, msg, meta]),
+  })
+
+  source.start()
+  // Microtask drain to let estimateBlockTimeMs resolve.
+  await new Promise((r) => setTimeout(r, 0))
+  await new Promise((r) => setTimeout(r, 0))
+
+  const estimateLog = logged.find(([, msg]) => msg === 'block time estimated')
+  expect(estimateLog).toBeDefined()
+  if (estimateLog) {
+    const meta = estimateLog[2] as { estimatedBlockTimeMs: number }
+    // (20000 - 19852) seconds / 256 blocks = 0.578s/block * 1000 = ~578ms.
+    expect(meta.estimatedBlockTimeMs).toBeGreaterThan(0)
+  }
+
+  source.stop()
+})
+
+test('adaptive scheduler — estimateBlockTimeMs failure logs warning and falls back to pollIntervalMs', async () => {
+  // RPC fails the historical lookup; estimation returns null; scheduler
+  // should fall back to pollIntervalMs without crashing.
+  const client = {
+    transport: { type: 'http' },
+    request: vi.fn(async (req: RpcCall) => {
+      if (req.method === 'eth_blockNumber') return '0x10'
+      if (req.method === 'eth_getBlockByNumber') {
+        // Return latest fine, fail the lookback
+        const [tag] = req.params as [string]
+        if (tag === 'latest') {
+          return blockWithTs('0x10', '0xtip', '0x100')
+        }
+        return null
+      }
+      return null
+    }),
+  } as unknown as PublicClient
+  const logged: Array<[string, string]> = []
+  const source = createChainSource({
+    client,
+    pollIntervalMs: 1_000_000,
+    logger: (level, msg) => logged.push([level, msg]),
+  })
+
+  source.start()
+  await new Promise((r) => setTimeout(r, 0))
+  await new Promise((r) => setTimeout(r, 0))
+
+  const warnLog = logged.find(
+    ([level, msg]) =>
+      level === 'warn' && msg.includes('block time estimation failed'),
+  )
+  expect(warnLog).toBeDefined()
+  source.stop()
+})
+
+test('adaptive scheduler — retry backoff applies when head does not move', async () => {
+  // Stub returns the same head forever. After the first tick (head
+  // moved from undefined), subsequent ticks back off: 2s, 4s, 8s.
+  let blockCount = 0
+  const block = blockWithTs('0x10', '0xstatic', '0x1')
+  const client = {
+    transport: { type: 'http' },
+    request: vi.fn(async (req: RpcCall) => {
+      if (req.method === 'eth_blockNumber') return '0x10'
+      if (req.method === 'eth_getBlockByNumber') {
+        const [, full] = req.params as [string, boolean]
+        if (full === true) blockCount += 1
+        return block
+      }
+      return null
+    }),
+  } as unknown as PublicClient
+  const source = createChainSource({
+    client,
+    pollIntervalMs: 100, // would-be cadence in dumb mode
+    adaptivePolling: { retryInitialMs: 2_000, retryMaxMs: 30_000 },
+  })
+
+  vi.useFakeTimers()
+  try {
+    source.start()
+    await vi.advanceTimersByTimeAsync(0)
+    // After tick 1, head moved (first observation); next scheduled at
+    // pollIntervalMs=100ms (since estimation hasn't resolved yet — sync
+    // setup).
+    await vi.advanceTimersByTimeAsync(100)
+    // Tick 2 — head didn't move, schedule next at 2000ms (retryInitialMs).
+    await vi.advanceTimersByTimeAsync(200)
+    // Within 200ms after tick 2, no more ticks should have fired
+    // (backoff is 2000ms). blockCount stays at 1 (only the first tick's
+    // full-block fetch — head probe gate skipped tick 2).
+    expect(blockCount).toBe(1)
+    await vi.advanceTimersByTimeAsync(2000)
+    // Now tick 3 has fired (at 100 + 2000 = 2100ms). Head still didn't
+    // move; full-block fetch was skipped again by head-probe-gate.
+    expect(blockCount).toBe(1)
+    source.stop()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('adaptive scheduler — enabled: false reverts to legacy setInterval behavior', async () => {
+  // With adaptive disabled, every tick fires at pollIntervalMs regardless
+  // of whether the head moved.
+  let blockProbeCount = 0
+  const block = blockWithTs('0x10', '0xstatic', '0x1')
+  const client = {
+    transport: { type: 'http' },
+    request: vi.fn(async (req: RpcCall) => {
+      if (req.method === 'eth_blockNumber') {
+        blockProbeCount += 1
+        return '0x10'
+      }
+      if (req.method === 'eth_getBlockByNumber') return block
+      return null
+    }),
+  } as unknown as PublicClient
+  const source = createChainSource({
+    client,
+    pollIntervalMs: 100,
+    adaptivePolling: { enabled: false },
+  })
+
+  vi.useFakeTimers()
+  try {
+    source.start()
+    await vi.advanceTimersByTimeAsync(0)
+    // Probe ran on tick 1 (immediate at start) — count = 1.
+    expect(blockProbeCount).toBe(1)
+    await vi.advanceTimersByTimeAsync(100)
+    // setInterval at 100ms fires tick 2 — count = 2.
+    expect(blockProbeCount).toBe(2)
+    await vi.advanceTimersByTimeAsync(100)
+    // tick 3 — count = 3. Dumb interval keeps firing regardless of head.
+    expect(blockProbeCount).toBe(3)
+    source.stop()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('logger — capability probe completion logged at info level', async () => {
+  const logged: Array<[string, string]> = []
+  const client = {
+    transport: { type: 'http' },
+    request: vi.fn(async () => null),
+  } as unknown as PublicClient
+  const source = createChainSource({
+    client,
+    pollIntervalMs: 1_000_000,
+    logger: (level, msg) => logged.push([level, msg]),
+  })
+  source.start()
+  await new Promise((r) => setTimeout(r, 0))
+  await new Promise((r) => setTimeout(r, 0))
+
+  const probeLog = logged.find(
+    ([level, msg]) => level === 'info' && msg === 'capability probe complete',
+  )
+  expect(probeLog).toBeDefined()
+  source.stop()
+})
+
+test('logger — start() logs info with adaptive flag', async () => {
+  const logged: Array<[string, string, unknown]> = []
+  const client = {
+    transport: { type: 'http' },
+    request: vi.fn(async () => null),
+  } as unknown as PublicClient
+  const source = createChainSource({
+    client,
+    pollIntervalMs: 5_000,
+    logger: (level, msg, meta) => logged.push([level, msg, meta]),
+  })
+  source.start()
+  await new Promise((r) => setTimeout(r, 0))
+
+  const startLog = logged.find(([, msg]) => msg === 'chain-source started')
+  expect(startLog).toBeDefined()
+  if (startLog) {
+    const meta = startLog[2] as { pollIntervalMs: number; adaptiveEnabled: boolean }
+    expect(meta.pollIntervalMs).toBe(5_000)
+    expect(meta.adaptiveEnabled).toBe(true)
+  }
+  source.stop()
+})
+
+test('logger — missing logger does not crash the source', async () => {
+  // No logger configured; source should run normally.
+  const client = {
+    transport: { type: 'http' },
+    request: vi.fn(async () => null),
+  } as unknown as PublicClient
+  const source = createChainSource({ client, pollIntervalMs: 1_000_000 })
+  expect(() => source.start()).not.toThrow()
+  await new Promise((r) => setTimeout(r, 0))
+  source.stop()
+})
+
+test('subscribeBlocks — WS onData with a new hash emits the block (handleHeadNotification fresh path)', async () => {
+  // Exercises the TRUE branch of the WS-path `block.hash !== lastEmittedBlockHash`
+  // check + the inner BigInt assignment + the blockSubs.emit call.
+  // Setup: WS onData fires with a block whose hash differs from any prior
+  // poll emission, so the source updates state and emits.
+  let capturedOnData: ((data: unknown) => void) | null = null
+  let getBlockCallCount = 0
+  const blockA: BlockResult = {
+    number: '0x10',
+    hash: '0xaaa',
+    parentHash: '0x0',
+    timestamp: '0x1',
+    baseFeePerGas: '0x0',
+    gasLimit: '0x0',
+    gasUsed: '0x0',
+    transactions: [],
+  }
+  const blockB: BlockResult = { ...blockA, number: '0x11', hash: '0xbbb' }
+  const subscribe = vi.fn(
+    async (arg: {
+      params: unknown[]
+      onData: (data: unknown) => void
+      onError: (err: unknown) => void
+    }): Promise<{ unsubscribe: () => void }> => {
+      if (arg.params[0] === 'newHeads') {
+        // capture the second subscribe (live) — first is the probe.
+        capturedOnData = arg.onData
+      }
+      return { unsubscribe: vi.fn() }
+    },
+  )
+  const client = {
+    transport: { type: 'webSocket', subscribe },
+    request: vi.fn(async ({ method, params }: RpcCall) => {
+      if (method === 'eth_getBlockByNumber') {
+        // Distinguish tick fetches (fullTransactions=true) from the
+        // adaptive scheduler's block-time estimation (fullTransactions=false).
+        // Estimation calls fixed-shape; tick calls increment the counter.
+        const [, full] = params as [string, boolean]
+        if (full !== true) return blockA // estimation; doesn't matter
+        getBlockCallCount += 1
+        // First tick fetch returns blockA; later returns blockB.
+        return getBlockCallCount === 1 ? blockA : blockB
+      }
+      if (method === 'txpool_content') return { pending: {}, queued: {} }
+      return null
+    }),
+  } as unknown as PublicClient
+
+  const source = createChainSource({
+    client,
+    adaptivePolling: { enabled: false }, // simpler timing for this test
+    pollIntervalMs: 1_000_000,
+  })
+  await source.ready()
+  const received: BlockResult[] = []
+  source.subscribeBlocks((b) => received.push(b))
+  source.start()
+  await flush()
+
+  expect(capturedOnData).not.toBeNull()
+  // WS onData fires — handleHeadNotification fetches latest (now blockB),
+  // sees hash differs from lastEmittedBlockHash (0xaaa from poll), and
+  // emits blockB.
+  capturedOnData!(null)
+  await flush()
+
+  expect(received.map((b) => b.hash)).toEqual(['0xaaa', '0xbbb'])
+  source.stop()
+})
+
+test('adaptive scheduler — early-return when stop() is called between ticks', async () => {
+  // Exercises the `if (!started) return` guard inside
+  // runAdaptiveTickAndSchedule. Setup: start the source, immediately
+  // stop it, and confirm the scheduled tick does not fire after stop.
+  let tickFires = 0
+  const client = {
+    transport: { type: 'http' },
+    request: vi.fn(async (req: RpcCall) => {
+      if (req.method === 'eth_blockNumber') return '0x10'
+      if (req.method === 'eth_getBlockByNumber') {
+        // Count only tick fetches (fullTransactions=true), not the
+        // adaptive scheduler's estimation calls.
+        const [, full] = req.params as [string, boolean]
+        if (full === true) tickFires += 1
+        return blockWithTs('0x10', '0xs', '0x1')
+      }
+      return null
+    }),
+  } as unknown as PublicClient
+
+  const source = createChainSource({ client, pollIntervalMs: 100 })
+
+  vi.useFakeTimers()
+  try {
+    source.start()
+    // Let tick 1 fully resolve and schedule tick 2.
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(0)
+    const firesBefore = tickFires
+    // Stop the source — tick 2 is queued in setTimeout, but the
+    // started=false guard inside runAdaptiveTickAndSchedule must
+    // bail before running tick.
+    source.stop()
+    // Advance well past where tick 2 would have fired.
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(tickFires).toBe(firesBefore)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+

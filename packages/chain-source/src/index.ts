@@ -25,7 +25,12 @@
  */
 
 export { createChainSource } from './source.js'
-export type { ChainSource, CreateChainSourceOptions } from './source.js'
+export type {
+  AdaptivePollOptions,
+  ChainSource,
+  CreateChainSourceOptions,
+  Logger,
+} from './source.js'
 
 export { Subscriptions } from './subscriptions.js'
 
@@ -35,6 +40,7 @@ export { probeCapabilities } from './capabilities.js'
 
 export {
   safeRequest,
+  estimateBlockTimeMs,
   fetchBlock,
   fetchBlockByHash,
   fetchHeadBlockNumber,

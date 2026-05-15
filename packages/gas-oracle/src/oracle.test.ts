@@ -599,10 +599,10 @@ describe('reducePollInputs', () => {
 type FakeClient = PublicClient
 
 const stubClient = (
-  responder: (method: string) => unknown = () => null,
+  responder: (method: string, params?: unknown[]) => unknown = () => null,
 ): { client: FakeClient; request: ReturnType<typeof vi.fn> } => {
   const request = vi.fn(async (req: { method: string; params: unknown[] }) => {
-    const r = responder(req.method)
+    const r = responder(req.method, req.params)
     if (r instanceof Error) throw r
     return r
   })
@@ -705,15 +705,18 @@ describe('createGasOracle', () => {
     oracle.start() // no-op
     await flush()
 
-    // Idempotency check: one cycle, not two. Counting `eth_getBlockByNumber`
-    // is the durable per-cycle marker — it fires once when the head
-    // changes (and once at tick #1 since lastSeen is undefined). The
-    // chain-source eager probe + sub-RPC fan-out totals are
-    // architecture-internal; this assertion stays meaningful even when
-    // those shift.
-    const blockFetches = request.mock.calls.filter(
-      (c) => (c[0] as { method: string }).method === 'eth_getBlockByNumber',
-    ).length
+    // Idempotency check: one cycle, not two. Filter to tick-driven block
+    // fetches (`fullTransactions: true`) to exclude the v0.16+ adaptive
+    // scheduler's block-time estimation calls, which use
+    // `fullTransactions: false` for both the `latest` and lookback fetches.
+    const blockFetches = request.mock.calls.filter((c) => {
+      const arg = c[0] as { method: string; params?: unknown[] }
+      return (
+        arg.method === 'eth_getBlockByNumber' &&
+        Array.isArray(arg.params) &&
+        arg.params[1] === true
+      )
+    }).length
     expect(blockFetches).toBe(1)
     oracle.stop()
   })
@@ -1359,10 +1362,23 @@ describe('createGasOracle', () => {
     // (kicks off the stale timer) → re-subscribe before the timer
     // fires (must clear it so a later unsubscribe doesn't see a
     // stale-timer leftover from the prior cycle).
+    //
+    // Stub varies the head per call so the v0.16+ adaptive scheduler
+    // sees "head moved" each tick and schedules the next at the
+    // pollIntervalMs cadence rather than backing off. Without this,
+    // backoff would silently mute the loop and the "still polling"
+    // assertion below would fail not because of staleAfter (which is
+    // what the test is actually about) but because adaptive scheduling
+    // correctly stopped polling an idle chain.
+    let headCounter = 0x1234
     const { client, request } = stubClient((method) => {
-      if (method === 'eth_blockNumber') return '0x1234'
+      if (method === 'eth_blockNumber') {
+        headCounter += 1
+        return `0x${headCounter.toString(16)}`
+      }
       if (method === 'eth_feeHistory') return okFeeHistory()
-      if (method === 'eth_getBlockByNumber') return okBlock()
+      if (method === 'eth_getBlockByNumber')
+        return { ...okBlock(), number: `0x${headCounter.toString(16)}`, hash: `0xhash${headCounter}` }
       return null
     })
     const oracle = createGasOracle({
@@ -1453,14 +1469,17 @@ describe('createGasOracle', () => {
   it('blockGatedPolling — second tick at the same head skips the full fan-out', async () => {
     let probeCount = 0
     let blockCount = 0
-    const { client } = stubClient((method) => {
+    const { client } = stubClient((method, params) => {
       if (method === 'eth_blockNumber') {
         probeCount += 1
         return '0x1234'
       }
       if (method === 'eth_feeHistory') return okFeeHistory()
       if (method === 'eth_getBlockByNumber') {
-        blockCount += 1
+        // Count only tick-driven block fetches; v0.16+ adaptive scheduler
+        // adds estimation calls with `fullTransactions: false` that aren't
+        // part of the per-cycle fan-out we're asserting about.
+        if (Array.isArray(params) && params[1] === true) blockCount += 1
         return okBlock()
       }
       return null
@@ -1489,11 +1508,12 @@ describe('createGasOracle', () => {
   it('blockGatedPolling — head change on second tick triggers full fan-out', async () => {
     let blockCount = 0
     let nextHead = '0x1234'
-    const { client } = stubClient((method) => {
+    const { client } = stubClient((method, params) => {
       if (method === 'eth_blockNumber') return nextHead
       if (method === 'eth_feeHistory') return okFeeHistory()
       if (method === 'eth_getBlockByNumber') {
-        blockCount += 1
+        // Tick-driven fetches only; see sibling test.
+        if (Array.isArray(params) && params[1] === true) blockCount += 1
         return { ...okBlock(), number: nextHead }
       }
       return null

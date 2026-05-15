@@ -52,6 +52,7 @@ import { probeCapabilities } from './capabilities.js'
 import { normalizeMempool } from './mempool.js'
 import { Subscriptions } from './subscriptions.js'
 import {
+  estimateBlockTimeMs,
   fetchBlock,
   fetchBlockByHash,
   fetchFeeHistory,
@@ -89,14 +90,82 @@ const PROBING_DEFAULT: Capabilities = {
   ready: false,
 }
 
+/**
+ * Logger callback shape — single function, level + message + optional
+ * meta. Caller decides routing and formatting; the toolkit just calls
+ * it at the decision points it cares about. Same shape used on
+ * `createChainSource` and `createTxTracker` so consumers wire one
+ * callback for both.
+ */
+export type Logger = (
+  level: 'debug' | 'info' | 'warn' | 'error',
+  message: string,
+  meta?: Record<string, unknown>,
+) => void
+
+/**
+ * Tuning knobs for the v0.16+ adaptive tick scheduler. Replaces the
+ * dumb-interval `setInterval` from v0.15 and earlier. The new loop
+ * schedules each subsequent tick based on the chain's measured block
+ * time + a backoff schedule when the head hasn't moved on time.
+ *
+ * Default behavior (everything `undefined`): the source estimates
+ * block time on `start()` via `latest` + `latest - 256`. After each
+ * successful head-move, the next tick is scheduled at
+ * `estimatedBlockTimeMs` from now. When a tick fires and the head
+ * hasn't moved, the next interval applies exponential backoff
+ * (`retryInitialMs * 2^attempts`, capped at `retryMaxMs`) until the
+ * head moves again, then resets.
+ *
+ * For chains where block-time estimation fails (no historical depth,
+ * gated `eth_getBlockByNumber`), the scheduler falls back to the
+ * static `pollIntervalMs` and runs the v0.15 cadence — no regression
+ * from the prior behavior.
+ */
+export interface AdaptivePollOptions {
+  /**
+   * Number of blocks to sample when estimating block time at start.
+   * Default 256. Larger = smoother estimate, but reaches farther
+   * back where actual block time may have changed. Smaller = fresher
+   * but noisier.
+   */
+  estimationLookbackBlocks?: number
+  /**
+   * Initial backoff in ms when the head doesn't move on the expected
+   * tick. Default 2_000. Doubles on each subsequent miss until
+   * capped at `retryMaxMs`.
+   */
+  retryInitialMs?: number
+  /**
+   * Cap on the exponential retry backoff. Default 30_000. The
+   * scheduler never waits longer than this between attempts on a
+   * stuck head.
+   */
+  retryMaxMs?: number
+  /**
+   * Set `false` to disable the adaptive scheduler entirely and use
+   * `pollIntervalMs` for every tick (matches v0.15 behavior). Default
+   * `true`. Useful for testing or for consumers who prefer dumb-
+   * interval semantics.
+   */
+  enabled?: boolean
+}
+
 export interface CreateChainSourceOptions {
   /** viem PublicClient pointed at the upstream RPC. */
   client: PublicClient
   /**
-   * Polling interval in ms when push subscriptions aren't available
-   * (or aren't preferred). Default 10_000.
+   * Polling interval in ms used as a fallback when adaptive scheduling
+   * is disabled OR when block-time estimation fails (e.g. RPC gates
+   * the historical lookup). Default 10_000.
    */
   pollIntervalMs?: number
+  /**
+   * Adaptive scheduler knobs. See {@link AdaptivePollOptions}. Default
+   * behavior is adaptive on with sensible defaults; pass
+   * `{ enabled: false }` to revert to v0.15 dumb-interval behavior.
+   */
+  adaptivePolling?: AdaptivePollOptions
   /**
    * Producer-side toggles: which RPCs the source's tick fans out.
    * Disabling `mempool` here disables `subscribeMempool` for every
@@ -112,6 +181,15 @@ export interface CreateChainSourceOptions {
    * (the source keeps running on partial data).
    */
   onError?: (method: string, err: unknown) => void
+  /**
+   * Optional logger callback. See {@link Logger}. Receives non-fatal
+   * observability events the consumer might want to surface: capability
+   * probe outcomes, adaptive scheduler decisions, subscription
+   * lifecycle, head-probe-gate skips. Errors continue to flow through
+   * `onError`; the logger handles the "what's the source doing right
+   * now" question.
+   */
+  logger?: Logger
 }
 
 export interface ChainSource {
@@ -196,13 +274,35 @@ export const createChainSource = (
 ): ChainSource => {
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
   const fetchMempool = options.poll?.mempool !== false
+  const adaptive = options.adaptivePolling
+  const adaptiveEnabled = adaptive?.enabled !== false
+  const estimationLookbackBlocks = adaptive?.estimationLookbackBlocks ?? 256
+  const retryInitialMs = adaptive?.retryInitialMs ?? 2_000
+  const retryMaxMs = adaptive?.retryMaxMs ?? 30_000
+  // `log` always callable; consumers can omit `logger` without us
+  // peppering the code with optional-chaining. The toolkit calls this
+  // at narrowly-chosen points — see DEV_NOTES in the module docstring
+  // for the policy.
+  const log: Logger = options.logger ?? (() => {})
 
   const blockSubs = new Subscriptions<BlockResult>()
   const mempoolSubs = new Subscriptions<NormalizedMempool>()
 
-  let timer: ReturnType<typeof setInterval> | null = null
+  // The adaptive scheduler uses recursive setTimeout; the static
+  // fallback uses setInterval. We hold a single handle and clear
+  // whichever type was set on stop().
+  let timer: ReturnType<typeof setTimeout> | null = null
+  let timerKind: 'interval' | 'timeout' | null = null
   let started = false
   let cachedCapabilities: Capabilities = PROBING_DEFAULT
+
+  // Adaptive scheduler state. `estimatedBlockTimeMs` is `null` until
+  // estimation completes (or never, if estimation fails — the
+  // scheduler then falls back to `pollIntervalMs`). `retryAttempts`
+  // tracks consecutive head-didn't-move ticks for exponential backoff;
+  // resets to 0 on every successful head-move.
+  let estimatedBlockTimeMs: number | null = null
+  let retryAttempts = 0
   /**
    * Narrow the viem transport to its WebSocket-specific `subscribe` shape once.
    * viem's `Transport` type does not model this method; we structurally narrow
@@ -287,8 +387,12 @@ export const createChainSource = (
         onData: () => void handleHeadNotification(),
         onError: (err) => options.onError?.('eth_subscribe.newHeads', err),
       })
+      log('info', 'WS subscription opened', { type: 'newHeads' })
     } catch (err) {
       options.onError?.('eth_subscribe.newHeads', err)
+      log('warn', 'WS subscription failed; falling back to poll', {
+        type: 'newHeads',
+      })
       cachedCapabilities = { ...cachedCapabilities, newHeads: 'poll-only' }
     }
   }
@@ -360,8 +464,14 @@ export const createChainSource = (
         onError: (err) =>
           options.onError?.('eth_subscribe.newPendingTransactions', err),
       })
+      log('info', 'WS subscription opened', {
+        type: 'newPendingTransactions',
+      })
     } catch (err) {
       options.onError?.('eth_subscribe.newPendingTransactions', err)
+      log('warn', 'WS subscription failed; falling back to poll', {
+        type: 'newPendingTransactions',
+      })
       cachedCapabilities = {
         ...cachedCapabilities,
         newPendingTransactions:
@@ -382,6 +492,12 @@ export const createChainSource = (
     // updates field values in place, no flipping back to "probing"
     // since downstream gates would briefly stall.
     cachedCapabilities = { ...caps, ready: true }
+    log('info', 'capability probe complete', {
+      newHeads: caps.newHeads,
+      newPendingTransactions: caps.newPendingTransactions,
+      txpoolContent: caps.txpoolContent,
+      receiptByHash: caps.receiptByHash,
+    })
   })
 
   // One poll cycle. Cheap `eth_blockNumber` probe + (optionally)
@@ -390,7 +506,7 @@ export const createChainSource = (
   // defensively), follow up with the expensive full-block fetch.
   // Mempool emits every successful cycle; blocks emit only when the
   // observed hash changes.
-  const tick = async (): Promise<void> => {
+  const tick = async (): Promise<{ headMoved: boolean }> => {
     const [head, txPool] = await Promise.all([
       fetchHeadBlockNumber(options.client, errSink('eth_blockNumber')),
       fetchMempool
@@ -411,6 +527,14 @@ export const createChainSource = (
       ? await fetchBlock(options.client, 'latest', errSink('eth_getBlockByNumber'))
       : null
 
+    // Track whether we actually saw a new canonical head this tick.
+    // The scheduler uses this to decide between the expected-block-
+    // time interval and the retry-backoff interval. We treat
+    // `headChanged && block !== null && block.hash !== lastEmittedBlockHash`
+    // as the "real head moved" criterion — the cheap eth_blockNumber
+    // probe alone isn't enough since it could be transiently wrong.
+    let headMoved = false
+
     if (block) {
       // Update the gate state from the actually-fetched block, not
       // from the probe's number — keeps the gate consistent with
@@ -423,6 +547,7 @@ export const createChainSource = (
       }
       if (block.hash !== lastEmittedBlockHash) {
         lastEmittedBlockHash = block.hash
+        headMoved = true
         blockSubs.emit(block)
       }
     }
@@ -432,19 +557,117 @@ export const createChainSource = (
     if (txPool && fetchMempool) {
       mempoolSubs.emit(normalizeMempool(txPool))
     }
+
+    return { headMoved }
+  }
+
+  /**
+   * Adaptive scheduler — computes the next tick delay from current
+   * state and runs the tick. Recursive `setTimeout` chain rather than
+   * `setInterval` so we can pick a fresh delay each iteration based on
+   * whether the head moved.
+   *
+   * Delay rules:
+   *
+   *   - Head moved this tick → reset `retryAttempts = 0` and schedule
+   *     next at `estimatedBlockTimeMs` (or `pollIntervalMs` if
+   *     estimation failed).
+   *   - Head didn't move → increment `retryAttempts`, schedule next at
+   *     `min(retryInitialMs * 2^(retryAttempts-1), retryMaxMs)`.
+   *
+   * The exponential backoff hits the user's "request at t=10, retry at
+   * t=12 if nothing changed" pattern. With the default
+   * `retryInitialMs: 2000`, retry intervals are 2s → 4s → 8s → 16s →
+   * 30s (capped). Most chains recover well within the first 1-2
+   * retries; the cap protects against runaway tickers on a stalled
+   * chain.
+   */
+  const runAdaptiveTickAndSchedule = async (): Promise<void> => {
+    // `tick()` is engineered to never throw — its inner fetches go
+    // through `safeRequest` (catches transport errors), `BigInt(...)`
+    // calls sit inside inner try/catch arms, and the `Subscriptions`
+    // pub/sub helper swallows per-subscriber throws. Wrapping the
+    // await in another try/catch would mask future regressions; if a
+    // change ever does cause tick to throw, we'd rather see the
+    // unhandled-rejection trail than silently retry under cover.
+    const result = await tick()
+
+    // `started` may have flipped to false during the await — `stop()`
+    // ran while the tick's inner fetches were in flight. Bailing here
+    // prevents the tick's already-mutated state from triggering a
+    // new setTimeout chain that races stop()'s cleared timer.
+    if (!started) return
+
+    let nextMs: number
+    if (result.headMoved) {
+      retryAttempts = 0
+      nextMs = estimatedBlockTimeMs ?? pollIntervalMs
+      log('debug', 'tick: head moved, scheduling next at expected block time', {
+        nextMs,
+        usingEstimate: estimatedBlockTimeMs !== null,
+      })
+    } else {
+      retryAttempts += 1
+      const exp = retryInitialMs * Math.pow(2, retryAttempts - 1)
+      nextMs = Math.min(exp, retryMaxMs)
+      log('debug', 'tick: head did not move, backing off', {
+        attempt: retryAttempts,
+        nextMs,
+      })
+    }
+
+    timer = setTimeout(() => {
+      void runAdaptiveTickAndSchedule()
+    }, nextMs)
+    timerKind = 'timeout'
   }
 
   return {
     start: () => {
       if (started) return
       started = true
-      // Fire the first tick immediately so consumers don't wait one
-      // full interval for their first event. The interval timer
-      // takes over from there.
-      void tick()
-      timer = setInterval(() => {
+      log('info', 'chain-source started', {
+        pollIntervalMs,
+        adaptiveEnabled,
+      })
+      if (adaptiveEnabled) {
+        // Kick off block-time estimation in parallel with the first
+        // tick. The first few ticks use `pollIntervalMs` (since
+        // `estimatedBlockTimeMs` is null until the estimate resolves);
+        // once estimation lands, subsequent ticks pick it up
+        // automatically because the scheduler reads the variable each
+        // iteration.
+        void estimateBlockTimeMs(
+          options.client,
+          estimationLookbackBlocks,
+          options.onError,
+        ).then((estimate) => {
+          if (estimate !== null) {
+            estimatedBlockTimeMs = estimate
+            log('info', 'block time estimated', {
+              estimatedBlockTimeMs: estimate,
+              lookbackBlocks: estimationLookbackBlocks,
+            })
+          } else {
+            log(
+              'warn',
+              'block time estimation failed; using pollIntervalMs fallback',
+              { pollIntervalMs },
+            )
+          }
+        })
+        // Fire the first tick immediately so consumers don't wait one
+        // full interval for their first event. The scheduler chain
+        // takes over from there.
+        void runAdaptiveTickAndSchedule()
+      } else {
+        // Legacy dumb-interval path — kept as an explicit opt-out.
         void tick()
-      }, pollIntervalMs)
+        timer = setInterval(() => {
+          void tick()
+        }, pollIntervalMs)
+        timerKind = 'interval'
+      }
       // Open WS subscribes lazily once the probe has landed. Fire-and-
       // forget; failures fall through to the existing poll loop.
       void readyPromise.then(() => tryOpenBlockSubscription())
@@ -469,8 +692,13 @@ export const createChainSource = (
         mempoolSubscriptionHandle = null
       }
       if (timer !== null) {
-        clearInterval(timer)
+        if (timerKind === 'interval') {
+          clearInterval(timer)
+        } else {
+          clearTimeout(timer)
+        }
         timer = null
+        timerKind = null
       }
       started = false
       // Subscriber registry is intentionally preserved across stop —
@@ -483,9 +711,12 @@ export const createChainSource = (
       // (or reorged) during the pause.
       lastEmittedBlockHash = undefined
       lastSeenBlockNumber = undefined
+      // Retry attempts reset too — a fresh start shouldn't carry over
+      // backoff state from a paused session.
+      retryAttempts = 0
     },
 
-    pollOnce: () => tick(),
+    pollOnce: () => tick().then(() => undefined),
 
     ready: () => readyPromise,
 

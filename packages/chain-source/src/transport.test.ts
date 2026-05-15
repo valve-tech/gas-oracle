@@ -2,6 +2,7 @@ import { test, expect, vi } from 'vitest'
 import type { PublicClient } from 'viem'
 
 import {
+  estimateBlockTimeMs,
   safeRequest,
   fetchHeadBlockNumber,
   fetchBlock,
@@ -210,4 +211,162 @@ test('fetchTransaction forwards the hash and returns the RawTx', async () => {
 
 test('zeroHash is the canonical 32-byte zero', () => {
   expect(zeroHash).toBe('0x' + '00'.repeat(32))
+})
+
+// ---------- estimateBlockTimeMs (v0.16) ----------
+
+test('estimateBlockTimeMs computes ms/block from sampled latest + latest-N', async () => {
+  // latest at height 512 timestamp 20_000s; old at height 512-256=256
+  // timestamp 17_440s. 2_560s spread over 256 blocks = 10s/block →
+  // 10_000ms/block.
+  const { client } = stubClient(({ method, params }) => {
+    if (method === 'eth_getBlockByNumber') {
+      const [tag] = params as [string]
+      if (tag === 'latest') {
+        return { number: '0x200', timestamp: '0x4e20' } // 512, 20_000
+      }
+      if (tag === '0x100') {
+        return { number: '0x100', timestamp: '0x4420' } // 256, 17_440
+      }
+    }
+    return null
+  })
+  const ms = await estimateBlockTimeMs(client, 256)
+  expect(ms).toBe(10_000)
+})
+
+test('estimateBlockTimeMs returns null when latest fetch fails', async () => {
+  const { client } = stubClient(() => null)
+  const ms = await estimateBlockTimeMs(client)
+  expect(ms).toBeNull()
+})
+
+test('estimateBlockTimeMs returns null when latest is missing required fields', async () => {
+  const { client } = stubClient(({ method, params }) => {
+    if (method === 'eth_getBlockByNumber') {
+      const [tag] = params as [string]
+      if (tag === 'latest') return { number: '0x10' } // no timestamp
+    }
+    return null
+  })
+  const ms = await estimateBlockTimeMs(client)
+  expect(ms).toBeNull()
+})
+
+test('estimateBlockTimeMs returns null when latest number does not decode', async () => {
+  const { client } = stubClient(({ method, params }) => {
+    if (method === 'eth_getBlockByNumber') {
+      const [tag] = params as [string]
+      if (tag === 'latest') return { number: 'not-hex', timestamp: '0x1' }
+    }
+    return null
+  })
+  const ms = await estimateBlockTimeMs(client)
+  expect(ms).toBeNull()
+})
+
+test('estimateBlockTimeMs returns null when lookback overshoots genesis', async () => {
+  // Latest at height 10, lookback 256 → targetHeight = -246. Function
+  // should bail rather than try a negative height.
+  const { client } = stubClient(({ method, params }) => {
+    if (method === 'eth_getBlockByNumber') {
+      const [tag] = params as [string]
+      if (tag === 'latest') return { number: '0xa', timestamp: '0x64' }
+    }
+    return null
+  })
+  const ms = await estimateBlockTimeMs(client, 256)
+  expect(ms).toBeNull()
+})
+
+test('estimateBlockTimeMs returns null when historical fetch fails', async () => {
+  const { client } = stubClient(({ method, params }) => {
+    if (method === 'eth_getBlockByNumber') {
+      const [tag] = params as [string]
+      if (tag === 'latest') return { number: '0x200', timestamp: '0x4e20' }
+    }
+    return null
+  })
+  const ms = await estimateBlockTimeMs(client, 256)
+  expect(ms).toBeNull()
+})
+
+test('estimateBlockTimeMs returns null when historical block missing timestamp', async () => {
+  const { client } = stubClient(({ method, params }) => {
+    if (method === 'eth_getBlockByNumber') {
+      const [tag] = params as [string]
+      if (tag === 'latest') return { number: '0x200', timestamp: '0x4e20' }
+      if (tag === '0x100') return { number: '0x100' } // no timestamp
+    }
+    return null
+  })
+  const ms = await estimateBlockTimeMs(client, 256)
+  expect(ms).toBeNull()
+})
+
+test('estimateBlockTimeMs returns null when historical timestamp does not decode', async () => {
+  const { client } = stubClient(({ method, params }) => {
+    if (method === 'eth_getBlockByNumber') {
+      const [tag] = params as [string]
+      if (tag === 'latest') return { number: '0x200', timestamp: '0x4e20' }
+      if (tag === '0x100') return { number: '0x100', timestamp: 'oops' }
+    }
+    return null
+  })
+  const ms = await estimateBlockTimeMs(client, 256)
+  expect(ms).toBeNull()
+})
+
+test('estimateBlockTimeMs returns null when timestamps go backwards', async () => {
+  const { client } = stubClient(({ method, params }) => {
+    if (method === 'eth_getBlockByNumber') {
+      const [tag] = params as [string]
+      if (tag === 'latest') return { number: '0x200', timestamp: '0x1' }
+      if (tag === '0x100') return { number: '0x100', timestamp: '0x4e20' } // later
+    }
+    return null
+  })
+  const ms = await estimateBlockTimeMs(client, 256)
+  expect(ms).toBeNull()
+})
+
+test('estimateBlockTimeMs routes onError calls for each fetch', async () => {
+  const errors: Array<[string, unknown]> = []
+  const { client } = stubClient(() => {
+    throw new Error('rpc down')
+  })
+  await estimateBlockTimeMs(client, 256, (method, err) =>
+    errors.push([method, err]),
+  )
+  expect(errors.length).toBeGreaterThan(0)
+  expect(errors[0][0]).toContain('eth_getBlockByNumber:latest')
+})
+
+test('estimateBlockTimeMs routes onError when the historical lookup fails (post-latest)', async () => {
+  // Latest succeeds; lookback throws. The function should route the
+  // lookback error through the same onError sink with the lookback tag.
+  const errors: Array<[string, unknown]> = []
+  const { client } = stubClient(({ method, params }) => {
+    if (method === 'eth_getBlockByNumber') {
+      const [tag] = params as [string]
+      if (tag === 'latest') return { number: '0x200', timestamp: '0x4e20' }
+      throw new Error('historical fetch refused')
+    }
+    return null
+  })
+  const ms = await estimateBlockTimeMs(client, 256, (method, err) =>
+    errors.push([method, err]),
+  )
+  expect(ms).toBeNull()
+  const lookbackError = errors.find(([m]) =>
+    m.includes('eth_getBlockByNumber:lookback'),
+  )
+  expect(lookbackError).toBeDefined()
+})
+
+test('estimateBlockTimeMs rejects non-integer or non-positive lookback', async () => {
+  const { client } = stubClient(() => null)
+  expect(await estimateBlockTimeMs(client, 0)).toBeNull()
+  expect(await estimateBlockTimeMs(client, -10)).toBeNull()
+  expect(await estimateBlockTimeMs(client, 1.5)).toBeNull()
 })

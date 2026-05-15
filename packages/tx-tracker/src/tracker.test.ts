@@ -4494,3 +4494,167 @@ test('receipt-poll-fallback — silent when capabilities probe has not completed
   ).toHaveLength(0)
   tracker.stop()
 })
+
+// ---------- logger tests (v0.16) ----------
+
+test('logger — rehydration count logged at info level', async () => {
+  const store = createInMemoryStore()
+  await store.put({
+    chainId: 1,
+    hash: '0xrehydrated',
+    status: {
+      hash: '0xrehydrated',
+      chainId: 1,
+      lastSeenInBlock: null,
+      lastSeenInMempool: null,
+      replacedBy: null,
+      vanishedAt: null,
+      unseenStreak: 0,
+      firstObservedAtBlock: null,
+      lastObservedAtBlock: null,
+      terminalAtBlockNumber: null,
+      capabilities: {
+        newHeads: 'subscription',
+        newPendingTransactions: 'poll-only',
+        txpoolContent: 'available',
+        receiptByHash: 'available',
+        reprobeOnReconnect: true,
+      },
+    },
+    firstSeenBlockNumber: 0n,
+    lastObservedBlockNumber: 0n,
+    retentionExpiresAtBlockNumber: 64n,
+    subscriptions: [
+      {
+        id: 'sub',
+        durable: true,
+        selector: { kind: 'hash', hash: '0xrehydrated' },
+      },
+    ],
+  })
+  const logged: Array<[string, string, unknown]> = []
+  const source = makeSource()
+  const tracker = createTxTracker({
+    source,
+    chainId: 1,
+    store,
+    logger: (level, msg, meta) => logged.push([level, msg, meta]),
+  })
+  tracker.start()
+  await tracker.ready()
+  await flush()
+
+  const rehydrationLog = logged.find(
+    ([level, msg]) =>
+      level === 'info' && msg === 'rehydrating durable records',
+  )
+  expect(rehydrationLog).toBeDefined()
+  if (rehydrationLog) {
+    const meta = rehydrationLog[2] as { count: number }
+    expect(meta.count).toBe(1)
+  }
+  tracker.stop()
+})
+
+test('logger — dedup migration logged when duplicates collapsed', async () => {
+  const store = createInMemoryStore()
+  await store.put({
+    chainId: 1,
+    hash: '0xdup',
+    status: {
+      hash: '0xdup',
+      chainId: 1,
+      lastSeenInBlock: null,
+      lastSeenInMempool: null,
+      replacedBy: null,
+      vanishedAt: null,
+      unseenStreak: 0,
+      firstObservedAtBlock: null,
+      lastObservedAtBlock: null,
+      terminalAtBlockNumber: null,
+      capabilities: {
+        newHeads: 'subscription',
+        newPendingTransactions: 'poll-only',
+        txpoolContent: 'available',
+        receiptByHash: 'available',
+        reprobeOnReconnect: true,
+      },
+    },
+    firstSeenBlockNumber: 0n,
+    lastObservedBlockNumber: 0n,
+    retentionExpiresAtBlockNumber: 64n,
+    subscriptions: [
+      { id: 'a', durable: true, selector: { kind: 'hash', hash: '0xdup' } },
+      { id: 'b', durable: true, selector: { kind: 'hash', hash: '0xdup' } },
+    ],
+  })
+  const logged: Array<[string, string, unknown]> = []
+  const source = makeSource()
+  const tracker = createTxTracker({
+    source,
+    chainId: 1,
+    store,
+    logger: (level, msg, meta) => logged.push([level, msg, meta]),
+  })
+  tracker.start()
+  await tracker.ready()
+  await flush()
+
+  const dedupLog = logged.find(
+    ([, msg]) =>
+      msg === 'dedup migration: collapsed duplicate persisted entries',
+  )
+  expect(dedupLog).toBeDefined()
+  if (dedupLog) {
+    const meta = dedupLog[2] as { before: number; after: number }
+    expect(meta.before).toBe(2)
+    expect(meta.after).toBe(1)
+  }
+  tracker.stop()
+})
+
+test('logger — retention expiry logged at info', async () => {
+  // Trigger retention expiry by configuring confirmationsForTerminal=1
+  // and a small retentionBlocks. Mine the tx, then advance blocks past
+  // the retention window.
+  const logged: Array<[string, string, unknown]> = []
+  const source = makeSource()
+  const tracker = startTracker(source, {
+    confirmationsForTerminal: 1,
+    retentionBlocks: 2,
+    logger: (level, msg, meta) => logged.push([level, msg, meta]),
+  })
+  tracker.subscribe('0xt', () => {}, { emitInitial: false })
+
+  // Block 1 mines the tx with confirmations=1 → terminal at block 1.
+  source.emitBlock(
+    makeBlock(1n, '0xb1', [{ hash: '0xt', from: '0xa', nonce: '0x0' }]),
+  )
+  // Block 2 — terminal + 1, not yet expired.
+  source.emitBlock(makeBlock(2n, '0xb2', [], '0xb1'))
+  // Block 4 — past terminal + retention (1 + 2 = 3, blockNumber 4 > 3).
+  source.emitBlock(makeBlock(4n, '0xb4', [], '0xb2'))
+  await flush()
+
+  const retentionLog = logged.find(
+    ([level, msg]) =>
+      level === 'info' && msg === 'retention expired; record evicted',
+  )
+  expect(retentionLog).toBeDefined()
+  if (retentionLog) {
+    const meta = retentionLog[2] as { hash: string }
+    expect(meta.hash).toBe('0xt')
+  }
+  tracker.stop()
+})
+
+test('logger — missing logger does not crash the tracker', async () => {
+  // No logger configured; tracker should run normally.
+  const source = makeSource()
+  const tracker = startTracker(source) // no logger option
+  tracker.subscribe('0xt', () => {}, { emitInitial: false })
+  source.emitBlock(makeBlock(1n, '0xb1', []))
+  await flush()
+  expect(tracker.getTxStatus('0xt')).not.toBeNull()
+  tracker.stop()
+})

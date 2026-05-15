@@ -41,6 +41,7 @@ import type {
   ChainSource,
   Capabilities,
   EventSource,
+  Logger,
   NormalizedMempool,
   RawTx,
   TransactionReceipt,
@@ -313,6 +314,16 @@ export interface CreateTxTrackerOptions {
    */
   retentionBlocks?: number
   onError?: (method: string, err: unknown) => void
+  /**
+   * Optional logger callback. Same shape as
+   * `@valve-tech/chain-source` — `(level, message, meta?) => void`.
+   * The tracker calls it at decision points the consumer might want
+   * to surface: rehydration counts, dedup-migration writes, terminal
+   * transitions, retention-expiry firings, capability-degradation /
+   * recovery transitions. Errors continue to flow through `onError`;
+   * the logger covers the "what did the tracker decide" question.
+   */
+  logger?: Logger
   lifecycle?: 'eager' | 'lazy'
   /**
    * Mined-and-confirmed terminal threshold. When non-null and a tracked
@@ -671,6 +682,11 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
     statusPollEveryBlocks = 1,
     confirmationsForTerminal = null,
   } = options
+  // `log` always callable; consumers can omit `logger` without us
+  // peppering the code with optional chains. Used at narrowly-chosen
+  // decision points where the consumer would care to observe the
+  // tracker's behavior.
+  const log: Logger = options.logger ?? (() => {})
 
   // Validate at construction — silent acceptance of zero/negative
   // thresholds would silently disable retention or fire terminal on
@@ -1414,6 +1430,10 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
       void store.delete(chainId, record.hash).catch((err) => {
         onError?.('store.delete', err)
       })
+      log('info', 'retention expired; record evicted', {
+        hash: record.hash,
+        terminalAtBlockNumber: record.status.terminalAtBlockNumber,
+      })
     }
 
     // Receipt-poll-fallback: dispatch non-blocking per-record receipt
@@ -2012,6 +2032,9 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
       onError?.('store.listDurable', err)
       return
     }
+    log('info', 'rehydrating durable records', {
+      count: durableRecords.length,
+    })
     for (const persisted of durableRecords) {
       // Skip if a fresh subscribe under the same hash already
       // re-created the record between start() and rehydration
@@ -2044,6 +2067,11 @@ export const createTxTracker = (options: CreateTxTrackerOptions): TxTracker => {
       }
       tracked.set(persisted.hash, record)
       if (dedupedSubs.length !== persisted.subscriptions.length) {
+        log('info', 'dedup migration: collapsed duplicate persisted entries', {
+          hash: persisted.hash,
+          before: persisted.subscriptions.length,
+          after: dedupedSubs.length,
+        })
         void store
           .put(toRecord(record))
           .catch((err) => onError?.('store.put', err))
