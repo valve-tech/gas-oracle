@@ -5,6 +5,19 @@ All notable changes to `@valve-tech/gas-oracle` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.16.0] — 2026-05-15
+
+### Notes
+
+- Synchronized release — no API changes to this package. Republished
+  at 0.16.0 alongside the rest of the toolkit; the substantive
+  changes are in `@valve-tech/chain-source` (adaptive polling +
+  `Logger` + `estimateBlockTimeMs` helper) and `@valve-tech/tx-tracker`
+  (logger). gas-oracle consumers using the auto-constructed
+  chain-source inherit adaptive polling automatically — fewer RPC
+  calls on idle chains, same observed event cadence on the oracle's
+  `subscribe()` surface.
+
 ## [0.15.0] — 2026-05-14
 
 ### Notes

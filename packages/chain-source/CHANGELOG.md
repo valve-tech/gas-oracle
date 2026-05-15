@@ -6,6 +6,74 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.16.0] — 2026-05-15
+
+### Added
+
+- **Adaptive polling.** Replaces the static `setInterval(pollIntervalMs)`
+  with a recursive `setTimeout` chain that schedules each subsequent
+  tick based on the measured block time + exponential backoff. On
+  start, the source samples `latest` + `latest - 256` to derive the
+  chain's average block time. After each head-move tick the next is
+  scheduled at that expected interval; when the head hasn't moved on
+  schedule, backoff (2s → 4s → 8s → 16s → 30s capped) kicks in
+  until movement resumes. The existing `eth_blockNumber` head-probe
+  gate is preserved — combined effect is dramatic RPC traffic
+  reduction on idle chains while consumer-observed event cadence
+  (one `subscribeBlocks` emit per actual new block) stays identical.
+- **`AdaptivePollOptions`** — tuning knobs via
+  `CreateChainSourceOptions.adaptivePolling`:
+  - `estimationLookbackBlocks` (default 256) — sample size for the
+    block-time estimate.
+  - `retryInitialMs` (default 2_000) — initial backoff when head
+    doesn't move.
+  - `retryMaxMs` (default 30_000) — cap on exponential backoff.
+  - `enabled` (default true) — pass `false` to revert to v0.15
+    dumb-interval semantics.
+- **`estimateBlockTimeMs(client, lookback?, onError?)`** — new
+  transport-layer helper exported from the package root. Samples
+  `latest` + `latest - lookback` and returns the average ms/block,
+  or `null` on transport error / insufficient history / invalid
+  timestamps / non-positive lookback. Stateless, safe to call
+  independently of the source.
+- **`Logger`** type and **`logger`** option on
+  `CreateChainSourceOptions` — `(level, message, meta?) => void`
+  single-callback shape. Called at narrowly-chosen decision points:
+  source start/stop, capability probe completion, block-time
+  estimation outcome, adaptive scheduler decisions (next-tick-in-Xms),
+  WS subscription open/close/failure. RPC-call-level logging stays
+  on the viem transport layer (see README).
+
+### Changed
+
+- Removed two unreachable defensive branches that previously hurt
+  coverage without protecting any real failure mode:
+  - The `Number.isFinite(ms) || ms <= 0` post-check in
+    `estimateBlockTimeMs` was preceded by guards (`latestTs > oldTs`,
+    `lookback > 0`) that ensure the result is always a finite
+    positive number. Replaced by an entry-time `lookback <= 0`
+    guard that the rest of the function depends on.
+  - The first `if (!started) return` in
+    `runAdaptiveTickAndSchedule` was redundant — `start()` sets
+    `started = true` before invoking the function synchronously, and
+    setTimeout callbacks queued after stop() are explicitly cleared.
+    The post-await guard at the same name stays (the one that
+    catches `stop()` happening during the tick's async work).
+
+### Notes
+
+- New README section "Overriding RPC dispatch" documents that
+  consumers control RPC dispatch via viem's `Transport` when
+  constructing the `PublicClient` — `http(url, { onFetchRequest,
+  onFetchResponse, retryCount, ... })`, `webSocket()`, `fallback([])`,
+  custom auth headers. The toolkit does not wrap or replace this; viem
+  is the single point of RPC control. No new toolkit-level transport
+  option needed.
+- 21 new tests covering adaptive scheduler behavior, estimator edge
+  cases, logger plumbing, and the WS handleHeadNotification fresh-
+  path emit branch. 128 total chain-source tests (was 107). Coverage
+  remains 100/100/100/100.
+
 ## [0.15.0] — 2026-05-14
 
 ### Added

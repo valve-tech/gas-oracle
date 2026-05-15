@@ -6,6 +6,35 @@ this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.16.0] — 2026-05-15
+
+### Added
+
+- **`CreateTxTrackerOptions.logger`** — optional
+  `(level, message, meta?) => void` callback for non-fatal
+  observability events. Same shape as the v0.16 chain-source logger;
+  consumers wire one callback for both. The tracker calls it at
+  narrowly-chosen decision points: rehydration count on
+  `tracker.start()`, dedup-migration writes (when v0.15 self-healing
+  collapsed historical persisted-subscription duplicates), retention
+  expiry firings. Errors continue to flow through `onError`; the
+  logger covers the "what did the tracker decide" question.
+
+### Notes
+
+- 4 new tests covering logger plumbing: rehydration count emitted at
+  `info`, dedup migration logged on legacy stores, retention expiry
+  surfaced when records cross the terminal+retentionBlocks window,
+  missing-logger default doesn't crash the dispatch path. 338 total
+  tx-tracker tests (was 334). Coverage remains 100/100/100/100.
+- The chain-source v0.16 adaptive scheduler propagates naturally to
+  tx-tracker consumers via the shared source — tracker dispatch ran
+  per-block-tick before and continues to do so, but those ticks now
+  fire around the actual block cadence rather than on a fixed
+  `pollIntervalMs` interval. The downstream effect: fewer wasted
+  per-record status polls / receipt polls / probe-Mined / probe-
+  Transaction dispatches when the chain is idle.
+
 ## [0.15.0] — 2026-05-14
 
 ### Added

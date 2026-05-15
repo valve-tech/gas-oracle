@@ -6,6 +6,64 @@ this file. Per-package details live in each `packages/*/CHANGELOG.md`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.16.0] — 2026-05-15
+
+Three improvements bundled, all motivated by a "polling is too
+aggressive" user report and a request for caller-injectable transport
+and logging.
+
+**`@valve-tech/chain-source` — adaptive polling.** The v0.15-and-
+earlier source ran on a static `setInterval(pollIntervalMs)` regardless
+of chain state; on chains with 10s blocks and a default 10s interval,
+every tick raced the next block half the time. v0.16 replaces this
+with a recursive `setTimeout` chain that schedules each subsequent
+tick based on the measured block time + exponential backoff. On start,
+the source samples `latest` + `latest - 256` (configurable lookback)
+to derive the average block time. After each head-move tick the next
+poll is scheduled around the expected next-block moment; when the head
+hasn't moved on schedule, backoff (2s → 4s → 8s → 16s → 30s capped)
+kicks in until movement resumes. Combined with the existing
+`eth_blockNumber` head-probe gate, this drops RPC traffic dramatically
+on idle chains without changing the observed event cadence — consumers
+still see one `subscribeBlocks` emit per actual new block. Tunable via
+the new `CreateChainSourceOptions.adaptivePolling` knobs; pass
+`{ enabled: false }` to revert to v0.15 dumb-interval semantics.
+
+**`@valve-tech/chain-source` + `@valve-tech/tx-tracker` — toolkit
+logger.** New optional `logger?: (level, message, meta?) => void`
+on both packages. Called at narrowly-chosen decision points the
+consumer might want to surface: source lifecycle, capability probe
+results, block-time estimation outcome, adaptive scheduler intervals,
+WS subscription open/close, tracker rehydration count, dedup-migration
+writes, retention expiries. Distinct from `onError` — the logger
+covers the "what's the toolkit deciding right now" question, while
+`onError` continues to surface non-fatal RPC failures. RPC-call-level
+logging stays on the viem transport (see below).
+
+**Transport-override documentation (no new code).** chain-source's
+README now has an explicit section showing that consumers control RPC
+dispatch via viem's `Transport` when constructing the `PublicClient`
+— `http(url, { onFetchRequest, onFetchResponse, retryCount, ... })`,
+`webSocket()`, `fallback([])`, custom auth headers. The toolkit does
+not wrap or replace this; viem is the single point of RPC control.
+This addresses the "make sure all transport functions can be injected
+by the caller" ask without growing the toolkit's API surface — the
+existing seam is sufficient.
+
+Also: two unreachable defensive branches removed from chain-source
+(`Number.isFinite || ms <= 0` post-check in `estimateBlockTimeMs`,
+and the redundant entry-guard in `runAdaptiveTickAndSchedule`) so
+coverage reflects the actual reachability of the code.
+
+- **chain-source**: adaptive polling + `estimateBlockTimeMs` helper
+  + `Logger` type + `logger` option on `createChainSource`.
+- **tx-tracker**: `logger` option on `createTxTracker`.
+- **gas-oracle**, **trueblocks-sdk**, **tx-flight-react**,
+  **viem-errors**, **wallet-adapter**: synced no-op republish.
+
+Coverage stays at 100/100/100/100 across all 7 packages. 1167 tests
+total (was 1146; +21 covering adaptive scheduler, estimator, loggers).
+
 ## [0.15.0] — 2026-05-14
 
 Five toolkit improvements, motivated by a localStorage audit on a real
